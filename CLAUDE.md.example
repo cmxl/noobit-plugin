@@ -13,7 +13,7 @@ working in that area.
 |---|---|---|
 | Backend | .NET 10+ (latest LTS), ASP.NET Core, minimal APIs | `noobit:aspnet-backend` |
 | Caching | FusionCache: L1 memory + L2 Redis + backplane | `noobit:fusioncache-redis` |
-| Database | MSSQL, PostgreSQL, or SQLite (per project) | `noobit:data-access` |
+| Database | MSSQL, PostgreSQL, or SQLite (per project) | `noobit:mssql` / `noobit:postgres` / `noobit:sqlite` |
 | Data access | EF Core by default; Dapper on measured hot paths | `noobit:data-access` |
 | Messaging | RabbitMQ for microservice communication | `noobit:rabbitmq-messaging` |
 | Auth | Custom cookie BFF — no OIDC provider, tokens never in the browser | `noobit:bff-security` |

@@ -5,7 +5,7 @@ argument-hint: <ProjectName> [postgres|mssql|sqlite] [--rabbitmq]
 
 Arguments given: "$ARGUMENTS". The first token is the project name — if it is blank, ask me for the project name before doing anything (that is the one allowed question). Database: postgres, unless the arguments contain `mssql` or `sqlite`. Add RabbitMQ wiring only if the arguments contain `--rabbitmq`. Scaffold the solution in the current directory.
 
-Load these skills first and follow them exactly (they ship with the noobit plugin — fully qualified names are `noobit:<name>`): `aspnet-backend`, `bff-security`, `fusioncache-redis`, `data-access`, `docker-nginx-deploy`, `dotnet-testing`, `docs-maintenance` — plus `angular-new-app` and `angular-ngrx-state` for the frontend if they are installed. Use my stack defaults throughout; do not ask configuration questions. When pinning package versions in `Directory.Packages.props` and `package.json`, check the current stable versions (nuget.org / npm / the official docs listed in the skills) instead of relying on memory.
+Load these skills first and follow them exactly (they ship with the noobit plugin — fully qualified names are `noobit:<name>`): `aspnet-backend`, `bff-security`, `fusioncache-redis`, `data-access` plus the matching provider skill (`mssql`/`postgres`/`sqlite`), `docker-nginx-deploy`, `dotnet-testing`, `docs-maintenance` — plus `angular-new-app` and `angular-ngrx-state` for the frontend if they are installed. Use my stack defaults throughout; do not ask configuration questions. When pinning package versions in `Directory.Packages.props` and `package.json`, check the current stable versions (nuget.org / npm / the official docs listed in the skills) instead of relying on memory.
 
 Create:
 
