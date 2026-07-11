@@ -9,7 +9,7 @@ description: Use when creating or modifying ASP.NET Core / .NET 10+ backend code
 
 High-performance ASP.NET Core defaults: minimal APIs, source-generated everything, structured configuration, and allocation-conscious code. Target the latest LTS (`net10.0`), latest C# language version, `Nullable` and `ImplicitUsings` enabled, warnings as errors.
 
-These are defaults for **new code in this stack's standard shape** (web apps/services). In an existing codebase, consistency wins: controllers stay controllers, the established layout stays — apply the performance and async rules (those are universal), and propose structural migrations separately.
+These are defaults for **new code in this stack's standard shape** (web apps/services). In an existing codebase, consistency wins: controllers stay controllers, the established layout stays — apply the performance and async rules (those are universal), and propose structural migrations separately. For CLI tools, the console framework is **Spectre.Console** (+ `Spectre.Console.Cli` for command-based apps) — the cross-cutting rules here (async, options, System.Text.Json, Polly, tests) still apply.
 
 ## Project layout
 
@@ -101,7 +101,8 @@ Rules:
 
 - Options pattern always: `builder.Services.AddOptions<MailOptions>().BindConfiguration("Mail").ValidateDataAnnotations().ValidateOnStart();`
 - Never `IConfiguration["key"]` sprinkled through code.
-- `IHttpClientFactory` for all outbound HTTP + `AddStandardResilienceHandler()` (Microsoft.Extensions.Http.Resilience).
+- `IHttpClientFactory` for all outbound HTTP + `AddStandardResilienceHandler()` (Microsoft.Extensions.Http.Resilience — Polly v8 under the hood).
+- Non-HTTP resilience (external SDKs, RabbitMQ ops, anything flaky): **Polly v8** `ResiliencePipeline` via `AddResiliencePipeline` (Polly.Extensions) — never hand-rolled retry/`Task.Delay` loops, and use the v8 pipeline API, not the legacy v7 `Policy` API. EF's `EnableRetryOnFailure` already covers DB transients — don't double-wrap it in Polly.
 - Keyed services for multiple implementations: `AddKeyedSingleton<IStore>("redis", ...)`.
 - Background work: `BackgroundService` + `System.Threading.Channels` for in-process queues; RabbitMQ for cross-service (see `rabbitmq-messaging`).
 - Mediator/CQRS: the default is **no mediator** — endpoints call services directly. If a project genuinely evolves a CQRS dispatch need, use **martinothamar/Mediator** (`Mediator.SourceGenerator` + `Mediator.Abstractions`; source-generated, `ValueTask`-based, MIT, v3.x) — **never MediatR** (reflection-based, commercially licensed since v13).
@@ -129,6 +130,8 @@ Rules:
 | Missing `CancellationToken` | Thread it through every async call |
 | Adding MediatR | If a mediator is warranted at all: martinothamar/Mediator (source-generated); MediatR is reflection-based and commercial since v13 |
 | NLog/log4net/`Console.WriteLine` logging | Serilog behind `ILogger<T>` — the only sanctioned logging framework |
+| Newtonsoft.Json anywhere | System.Text.Json with source generation — no exceptions in new code |
+| Hand-rolled retry loops (`for` + `Task.Delay`) | Polly v8 `ResiliencePipeline` (or the standard resilience handler for HTTP) |
 
 ## Official docs — verify, don't guess
 
@@ -138,5 +141,7 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - OpenTelemetry .NET: https://opentelemetry.io/docs/languages/dotnet/
 - Mediator (sanctioned CQRS package, if warranted): https://github.com/martinothamar/Mediator
 - Serilog: https://github.com/serilog/serilog (ASP.NET Core integration: https://github.com/serilog/serilog-aspnetcore)
+- Polly: https://github.com/App-vNext/Polly (docs: https://www.pollydocs.org/)
+- Spectre.Console (CLI apps): https://spectreconsole.net/
 - **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
 - **Curated enterprise example codebases (dotnet/eShop, CleanArchitecture templates, async guidance — with what to study vs ignore): [references/example-codebases.md](references/example-codebases.md) — consult when designing service boundaries, aggregates, or event flows.**

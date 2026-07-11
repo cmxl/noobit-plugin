@@ -28,6 +28,9 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 | Data access | EF Core by default; Dapper on measured hot paths | `noobit:data-access` |
 | Messaging | RabbitMQ for microservice communication | `noobit:rabbitmq-messaging` |
 | CQRS/mediator | Only if genuinely warranted: martinothamar/Mediator — **never MediatR** | `noobit:aspnet-backend` |
+| JSON | System.Text.Json (source-generated) — **never Newtonsoft.Json** | `noobit:aspnet-backend` |
+| Resilience | Polly v8 `ResiliencePipeline`; HTTP via `AddStandardResilienceHandler` (Polly-based) | `noobit:aspnet-backend` |
+| CLI apps | Spectre.Console (+ Spectre.Console.Cli for command apps) | `noobit:aspnet-backend` |
 | Auth | Custom cookie BFF — no OIDC provider, tokens never in the browser | `noobit:bff-security` |
 | Logging | Serilog (structured), behind `ILogger<T>` — never NLog/log4net | `noobit:aspnet-backend` |
 | Hosting | Docker, nginx reverse proxy, Let's Encrypt | `noobit:docker-nginx-deploy` |
