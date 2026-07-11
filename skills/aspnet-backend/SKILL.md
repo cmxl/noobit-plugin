@@ -34,9 +34,12 @@ Small services can collapse Domain into the Api project. Never introduce `IRepos
 
 Four files at the repo root, always — never put versions or shared properties in individual csproj files:
 
-- **`global.json`** — pin the SDK so builds are reproducible across machines/CI:
+- **`global.json`** — pin the SDK so builds are reproducible across machines/CI, and enable the Microsoft.Testing.Platform runner that xUnit v3 needs:
   ```json
-  { "sdk": { "version": "10.0.100", "rollForward": "latestFeature" } }
+  {
+    "sdk": { "version": "10.0.100", "rollForward": "latestFeature" },
+    "test": { "runner": "Microsoft.Testing.Platform" }
+  }
   ```
 - **`Directory.Build.props`** — shared MSBuild properties (no package versions here):
   ```xml
@@ -128,3 +131,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - ASP.NET Core: https://learn.microsoft.com/en-us/aspnet/core/
 - .NET & C#: https://learn.microsoft.com/en-us/dotnet/
 - OpenTelemetry .NET: https://opentelemetry.io/docs/languages/dotnet/
+- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

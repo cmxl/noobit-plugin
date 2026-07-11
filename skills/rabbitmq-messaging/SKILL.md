@@ -104,3 +104,4 @@ await channel.BasicConsumeAsync(queue, autoAck: false, consumer, ct);
 When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
 - RabbitMQ: https://www.rabbitmq.com/docs
 - .NET client guide (v7): https://www.rabbitmq.com/client-libraries/dotnet-api-guide
+- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

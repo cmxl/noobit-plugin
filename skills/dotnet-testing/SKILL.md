@@ -102,9 +102,11 @@ Auth in integration tests: a test authentication handler (`AddAuthentication("Te
 ## Running
 
 ```
-dotnet test                                   # whole solution
-dotnet test --filter "Category!=Integration"  # quick loop if categories used
+dotnet test                                                # whole solution
+dotnet test -- --filter-not-trait "Category=Integration"   # quick loop; MTP flags go after --
 ```
+
+xUnit v3 runs on Microsoft.Testing.Platform (MTP): filters use MTP flags after `--` (`--filter-not-trait`, `--filter-class`, `--filter-method`) — the old VSTest `--filter "..."` syntax does not apply. On .NET SDK 10, `dotnet test` uses the MTP runner only when `global.json` contains `{ "test": { "runner": "Microsoft.Testing.Platform" } }` (part of the standard repo-root files — see `aspnet-backend`).
 
 Testcontainers needs Docker running. Containers are shared per collection — a full integration suite should boot infrastructure once, not per test class.
 
@@ -128,3 +130,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Respawn: https://github.com/jbogard/Respawn
 - Integration tests / WebApplicationFactory: https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests
 - Vitest: https://vitest.dev/ | Playwright: https://playwright.dev/
+- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

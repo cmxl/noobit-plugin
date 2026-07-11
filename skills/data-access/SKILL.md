@@ -39,7 +39,7 @@ builder.Services.AddDbContextPool<AppDbContext>(o => o
 
 - `dotnet ef migrations add <Name>` — review the generated code, especially destructive ops.
 - One provider per project; if a project supports multiple providers, keep migrations in provider-specific assemblies (`Migrations/Mssql`, `Migrations/Postgres`).
-- Apply on deploy via `dotnet ef database update` or `migrationBundle` — **not** `Database.Migrate()` in multi-instance production startup (race between instances). For single-instance/dev, startup migrate is fine.
+- Apply on deploy via SQL scripts or a migration bundle — **not** `Database.Migrate()` at production startup. (EF 9+'s migration lock fixed the old multi-instance race, but runtime migration remains officially discouraged: it needs elevated schema permissions, applies uninspected SQL, and has no clean rollback.) For single-instance/dev, startup migrate is fine.
 
 ## Dapper rules
 
@@ -95,3 +95,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Dapper: https://github.com/DapperLib/Dapper
 - Npgsql: https://www.npgsql.org/doc/ (EF Core provider: https://www.npgsql.org/efcore/)
 - Microsoft.Data.Sqlite: https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/
+- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

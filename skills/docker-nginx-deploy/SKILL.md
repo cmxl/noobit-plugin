@@ -162,3 +162,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Official .NET images: https://github.com/dotnet/dotnet-docker
 - nginx: https://nginx.org/en/docs/
 - certbot: https://certbot.eff.org/ | Let's Encrypt: https://letsencrypt.org/docs/
+- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

@@ -39,7 +39,7 @@ Scale down for small projects (README.md + architecture.md minimum) — but the 
 
 ## Mermaid conventions
 
-Use the right diagram per question — architecture: `graph TB` (containers/dependencies), flows: `sequenceDiagram`, data: `erDiagram`, lifecycles: `stateDiagram-v2`.
+Use the right diagram per question — architecture: `flowchart TB` (containers/dependencies; `graph` is the legacy alias), flows: `sequenceDiagram`, data: `erDiagram`, lifecycles: `stateDiagram-v2`.
 
 ```mermaid
 sequenceDiagram
@@ -87,3 +87,4 @@ The `docs-maintainer` agent / `/docs-sync` command automates this: it diffs the 
 
 When diagram syntax is uncertain, WebFetch the official docs instead of guessing:
 - Mermaid: https://mermaid.js.org/intro/
+- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

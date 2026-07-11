@@ -113,3 +113,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - ASP.NET Core security: https://learn.microsoft.com/en-us/aspnet/core/security/
 - YARP: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/yarp/yarp-overview
 - OWASP CSRF Prevention Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
