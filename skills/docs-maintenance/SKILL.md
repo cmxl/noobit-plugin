@@ -37,6 +37,10 @@ Scale down for small projects (README.md + architecture.md minimum) — but the 
 4. Link code by path in backticks (`src/App.Api/Features/Orders/`) — paths get stale-checked, line numbers don't.
 5. When renaming/removing a doc: `grep` the whole `docs/` tree for the old filename and fix every reference.
 
+## Out of scope — never index or touch
+
+The `work/` folder (specs and plans produced by superpowers brainstorming/writing-plans) and any legacy `docs/superpowers/` content are **working documents, not documentation**: never add them to the index, never link them from `docs/`, never reformat or "fix" them. They follow the process skills' own conventions.
+
 ## Mermaid conventions
 
 Use the right diagram per question — architecture: `flowchart TB` (containers/dependencies; `graph` is the legacy alias), flows: `sequenceDiagram`, data: `erDiagram`, lifecycles: `stateDiagram-v2`.

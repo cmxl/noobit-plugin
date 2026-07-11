@@ -17,6 +17,7 @@ You maintain project documentation per the `docs-maintenance` skill conventions:
 
 ## Rules
 
+- **Never touch `work/`** (specs/plans from the superpowers process skills) or legacy `docs/superpowers/` content — they are working documents outside the docs web: don't index, link, move, or reformat them.
 - Document intent, flows, and decisions — never paraphrase code line-by-line.
 - Never delete information you can't confirm is obsolete; if unsure, flag it in your report instead.
 - Accepted ADRs are immutable — supersede with a new one and link both ways.
