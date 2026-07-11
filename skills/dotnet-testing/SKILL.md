@@ -108,7 +108,19 @@ dotnet test -- --filter-not-trait "Category=Integration"   # quick loop; MTP fla
 
 xUnit v3 runs on Microsoft.Testing.Platform (MTP): filters use MTP flags after `--` (`--filter-not-trait`, `--filter-class`, `--filter-method`) — the old VSTest `--filter "..."` syntax does not apply. On .NET SDK 10, `dotnet test` uses the MTP runner only when `global.json` contains `{ "test": { "runner": "Microsoft.Testing.Platform" } }` (part of the standard repo-root files — see `aspnet-backend`).
 
-Testcontainers needs Docker running. Containers are shared per collection — a full integration suite should boot infrastructure once, not per test class.
+Testcontainers needs Docker running — **if it isn't, start it instead of skipping the tests**. Check with `docker info`; on failure start the engine and poll until ready (up to ~90s):
+
+```powershell
+docker info 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Start-Process "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"   # Windows
+    # Linux: sudo systemctl start docker   |   macOS: open -a "Docker Desktop"
+    $deadline = (Get-Date).AddSeconds(90)
+    do { Start-Sleep 3; docker info 2>$null | Out-Null } while ($LASTEXITCODE -ne 0 -and (Get-Date) -lt $deadline)
+}
+```
+
+Only report Docker as unavailable (and integration tests as skipped) if it still isn't up after that. Containers are shared per collection — a full integration suite should boot infrastructure once, not per test class.
 
 Testcontainers rules (per the official best-practices doc):
 - **Pin image versions** (`postgres:17`, never `latest` or the module default).

@@ -48,6 +48,7 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 ## Working style
 
 - Keep manual intervention low: run builds/formatters/tests yourself instead of asking me to.
+- Docker needed but not running (Testcontainers, compose, builds)? Start it yourself — `docker info` to check, launch Docker Desktop (Windows/macOS) or `systemctl start docker` (Linux), poll until ready (~90s). Only report it as unavailable if starting fails.
 - When unsure about a framework API or best practice, WebFetch/WebSearch the official docs instead of guessing: .NET/ASP.NET Core/EF Core → https://learn.microsoft.com/, Angular → https://angular.dev, NgRx SignalStore → https://ngrx.io/guide/signals/signal-store. Each skill lists its own doc links in an "Official docs" section.
 - New solutions/projects: scaffold with `/noobit:new-fullstack`; deployment assets with `/noobit:deploy-setup`.
 - Language: code, comments, docs, and commits in English.

@@ -5,7 +5,7 @@ argument-hint: <ProjectName> [postgres|mssql|sqlite] [--rabbitmq]
 
 Arguments given: "$ARGUMENTS". The first token is the project name — if it is blank, ask me for the project name before doing anything (that is the one allowed question). Database: postgres, unless the arguments contain `mssql` or `sqlite`. Add RabbitMQ wiring only if the arguments contain `--rabbitmq`. Scaffold the solution in the current directory.
 
-Load these skills first and follow them exactly (they ship with the noobit plugin — fully qualified names are `noobit:<name>`): `aspnet-backend`, `bff-security`, `fusioncache-redis`, `data-access` plus the matching provider skill (`mssql`/`postgres`/`sqlite`), `docker-nginx-deploy`, `dotnet-testing`, `docs-maintenance` — plus `angular-new-app` and `angular-ngrx-state` for the frontend if they are installed. Use my stack defaults throughout; do not ask configuration questions. When pinning package versions in `Directory.Packages.props` and `package.json`, check the current stable versions (nuget.org / npm / the official docs listed in the skills) instead of relying on memory.
+Load these skills first and follow them exactly: `aspnet-backend`, `bff-security`, `fusioncache-redis`, `data-access` plus the matching provider skill (`mssql`/`postgres`/`sqlite`), `docker-nginx-deploy`, `dotnet-testing`, `docs-maintenance` — plus `angular-new-app` and `angular-ngrx-state` for the frontend. Use my stack defaults throughout; do not ask configuration questions. When pinning package versions in `Directory.Packages.props` and `package.json`, check the current stable versions (nuget.org / npm / the official docs listed in the skills) instead of relying on memory.
 
 Create:
 
@@ -18,4 +18,4 @@ Create:
 7. **Docs**: `docs/` skeleton per `docs-maintenance` (README index, architecture.md with Mermaid container diagram of exactly what was scaffolded, getting-started.md with real commands, security.md, deployment.md, ADR-0001 recording the stack choice) — all cross-referenced.
 8. **Git**: `git init`, initial commit.
 
-Then verify: `dotnet build` succeeds, `dotnet test` passes (integration smoke test requires Docker — if Docker isn't running, say so and skip rather than fake it), `npm run build` succeeds in `web/`. Report what was created and the exact commands to run it locally.
+Then verify: `dotnet build` succeeds, `dotnet test` passes (the integration smoke test requires Docker — if it isn't running, start it and wait for readiness per `dotnet-testing`; only skip with an explicit note if it can't be started, never fake the result), `npm run build` succeeds in `web/`. Report what was created and the exact commands to run it locally.

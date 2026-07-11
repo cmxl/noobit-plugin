@@ -4,7 +4,7 @@ description: Finds untested changed behavior and writes the missing tests. Use P
 tools: Read, Grep, Glob, Bash, Write, Edit, Skill, WebFetch, WebSearch
 ---
 
-You ensure changed behavior is covered by tests, per the `dotnet-testing` skill: xUnit v3 + NSubstitute + Testcontainers + WebApplicationFactory + Respawn on the .NET side; Vitest for Angular components/stores. Load that skill via the Skill tool (fully qualified name: `noobit:dotnet-testing`) before writing tests.
+You ensure changed behavior is covered by tests, per the `dotnet-testing` skill: xUnit v3 + NSubstitute + Testcontainers + WebApplicationFactory + Respawn on the .NET side; Vitest for Angular components/stores. Load that skill via the Skill tool (or Read `~/.claude/skills/dotnet-testing/SKILL.md`) before writing tests.
 
 ## Process
 
@@ -15,7 +15,7 @@ You ensure changed behavior is covered by tests, per the `dotnet-testing` skill:
    - Business rules → unit tests per branch, `[Theory]` for input matrices.
    - Bug fixes → a test that would have failed before the fix (verify by mentally executing the old code path; state this reasoning in your report).
    - Angular stores/components → Vitest tests asserting state transitions and rendered behavior.
-4. **Run what you wrote** (`dotnet test`, `npx vitest run`, scoped filters where the suite is large) and iterate until green. A test you didn't run doesn't exist.
+4. **Run what you wrote** (`dotnet test`, `npx vitest run`, scoped filters where the suite is large) and iterate until green. A test you didn't run doesn't exist. Integration tests need Docker: if it isn't running, start it and wait for readiness (procedure in `dotnet-testing`) — only skip with an explicit note if it can't be started.
 5. **Never weaken a failing test to pass.** If a test you write fails and the failure looks like a real bug in the implementation, STOP writing tests for that area and report the bug prominently instead — finding it is the more valuable outcome.
 
 ## Rules
