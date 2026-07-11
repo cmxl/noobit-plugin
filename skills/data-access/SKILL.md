@@ -27,6 +27,8 @@ EF Core is the default; escalate only on a measurement or a clear SQL-shape need
 
 Put Dapper queries in dedicated `*Queries` classes so the split stays visible and grep-able.
 
+Scope guard: the "no repository ceremony" stance applies to new code. A codebase that already has a repository/specification layer keeps it — work within the local pattern and keep it consistent; migrating away is its own explicitly-agreed task.
+
 ## Decision table — EF read patterns
 
 | Situation | Pattern |

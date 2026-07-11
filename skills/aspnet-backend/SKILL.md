@@ -9,6 +9,8 @@ description: Use when creating or modifying ASP.NET Core / .NET 10+ backend code
 
 High-performance ASP.NET Core defaults: minimal APIs, source-generated everything, structured configuration, and allocation-conscious code. Target the latest LTS (`net10.0`), latest C# language version, `Nullable` and `ImplicitUsings` enabled, warnings as errors.
 
+These are defaults for **new code in this stack's standard shape** (web apps/services). In an existing codebase, consistency wins: controllers stay controllers, the established layout stays — apply the performance and async rules (those are universal), and propose structural migrations separately.
+
 ## Project layout
 
 Feature folders (vertical slices) over layer folders. One solution, few projects:

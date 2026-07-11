@@ -9,6 +9,8 @@ description: Use when implementing authentication, authorization, login/logout, 
 
 The frontend never sees a token. The ASP.NET Core app is the **Backend for Frontend**: it owns authentication with cookie auth (ASP.NET Core Identity or a custom user store), serves/fronts the Angular app on the **same origin**, and proxies any downstream APIs server-side (YARP) attaching credentials there. Browser state = one HttpOnly session cookie + one readable XSRF cookie. No JWTs in localStorage, ever.
 
+**Scope guard — this pattern is for first-party browser clients.** It does NOT fit: third-party/public API consumers, machine-to-machine callers, or native/mobile apps (no shared-origin cookie jar) — those need token-based auth (API keys, client-credentials, or OIDC if the project adds a provider). A service can serve both: cookie BFF endpoints for its own SPA *and* a separately-authenticated token surface for external consumers — keep the two auth schemes and route groups explicitly separate rather than weakening the cookie rules to accommodate outsiders.
+
 ## Auth wiring
 
 ```csharp

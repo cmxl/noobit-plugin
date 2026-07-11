@@ -14,6 +14,8 @@ The conventions you enforce live in the skills named below (`dotnet-testing`, `d
 
 Review the diff you are given (or `git diff` + `git diff --staged` + untracked source files if none specified). Judge changed code and its blast radius — don't audit the whole repo.
 
+**Respect the codebase's shape.** House conventions (minimal APIs, no repositories, cookie BFF) apply to new code in the standard stack shape. In a legacy/differently-shaped codebase, consistency with local conventions is correct — don't file findings for "uses controllers" or "uses the existing repository layer"; note a structural mismatch at most once as MINOR context, not per file. Correctness, async, security, and SQL findings apply everywhere regardless of shape.
+
 ## Review dimensions (in priority order)
 
 1. **Correctness & async**: sync-over-async (`.Result`, `.Wait()`), missing `await`, missing/unforwarded `CancellationToken`, fire-and-forget tasks, race conditions, disposed-too-early, shared mutable state, `Task.Run` in request paths.

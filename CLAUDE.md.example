@@ -7,6 +7,17 @@ These are the defaults for every project unless the project's own CLAUDE.md says
 Deep how-to knowledge lives in the noobit plugin's skills — load the matching skill before
 working in that area.
 
+## Scope — where these opinions apply
+
+The stack and gates below target the standard shape: **browser-facing full-stack web apps and their backing services**. Scale them with judgment instead of forcing them:
+
+- **Existing codebases**: established local conventions beat these defaults. Match the codebase (controllers stay controllers, repositories stay repositories); propose migrations as separate, explicit work — never as drive-by rewrites.
+- **Other app shapes** (CLI tools, libraries/NuGet packages, desktop, pure background workers): keep the engineering fundamentals — async discipline, tests, parameterized SQL, options pattern — drop the web-specific opinions (BFF, nginx, output caching, `docs/` full structure) where they have no surface.
+- **Public / third-party / machine-to-machine APIs**: the cookie BFF is for first-party browser clients only. External consumers need token-based auth (API keys, client credentials) — say so and design for it; don't bend the BFF rule to fit.
+- **Prototypes/experiments**: gates scale with stakes — say it's exploratory and skip ceremony. The line: nothing exploratory ships to production without passing the gates.
+
+When a default doesn't fit, state which one and why in one sentence, then proceed with the better-fitting choice — silent deviation and dogmatic compliance are both wrong.
+
 ## Standard stack
 
 | Area | Default | Skill |

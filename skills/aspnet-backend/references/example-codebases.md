@@ -1,6 +1,6 @@
 # Enterprise-grade .NET example codebases
 
-Verified July 2026 (repo activity, target framework, licensing). These are **study material**, not templates to copy wholesale — where an example's patterns conflict with our conventions (vertical slices, minimal APIs, DbContext-direct, no MediatR), our conventions win. Each entry says what it's good for and what to ignore.
+Verified July 2026 (repo activity, target framework, licensing). These are **study material**, not templates to copy wholesale. For our standard shape (full-stack web apps/services on this stack), our conventions win where an example conflicts (vertical slices, minimal APIs, DbContext-direct, no MediatR). For other application shapes — or codebases already following one of these examples' styles — weigh the example's own context instead of forcing house style (see the Scope section in CLAUDE.md). Each entry says what it's good for and what to ignore.
 
 ## Study these (active, current)
 
