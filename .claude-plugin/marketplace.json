@@ -1,0 +1,14 @@
+{
+  "name": "noobit",
+  "owner": {
+    "name": "Tobias Haimerl",
+    "email": "tobias.haimerl@tecvia.com"
+  },
+  "plugins": [
+    {
+      "name": "noobit",
+      "source": "./",
+      "description": "Full-stack .NET 10+ / Angular standards with automated review, testing, and docs maintenance"
+    }
+  ]
+}

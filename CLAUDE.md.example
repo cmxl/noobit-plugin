@@ -1,0 +1,39 @@
+# Global conventions (noobit stack)
+
+Copy this into your `~/.claude/CLAUDE.md` (or a team repo's `CLAUDE.md`) — plugins cannot ship
+always-on instructions, and the quality gates below should be active in every session.
+
+These are the defaults for every project unless the project's own CLAUDE.md says otherwise.
+Deep how-to knowledge lives in the noobit plugin's skills — load the matching skill before
+working in that area.
+
+## Standard stack
+
+| Area | Default | Skill |
+|---|---|---|
+| Backend | .NET 10+ (latest LTS), ASP.NET Core, minimal APIs | `noobit:aspnet-backend` |
+| Caching | FusionCache: L1 memory + L2 Redis + backplane | `noobit:fusioncache-redis` |
+| Database | MSSQL, PostgreSQL, or SQLite (per project) | `noobit:data-access` |
+| Data access | EF Core by default; Dapper on measured hot paths | `noobit:data-access` |
+| Messaging | RabbitMQ for microservice communication | `noobit:rabbitmq-messaging` |
+| Auth | Custom cookie BFF — no OIDC provider, tokens never in the browser | `noobit:bff-security` |
+| Hosting | Docker, nginx reverse proxy, Let's Encrypt | `noobit:docker-nginx-deploy` |
+| Frontend | Angular latest LTS, standalone, signals | — |
+| State | NgRx SignalStore | — |
+| .NET tests | xUnit v3 + NSubstitute + Testcontainers + WebApplicationFactory | `noobit:dotnet-testing` |
+| Angular tests | Vitest (unit), Playwright (e2e) | — |
+| Docs | Markdown in `docs/`, cross-referenced, Mermaid diagrams | `noobit:docs-maintenance` |
+
+## Non-negotiable quality gates
+
+1. **Every feature and bugfix ships with tests.** No untested behavior changes. Prefer TDD.
+2. **Review before commit.** Dispatch the `stack-reviewer` agent on the diff before any commit; fix BLOCKER and MAJOR findings first.
+3. **Docs stay in sync.** A change that affects behavior, architecture, config, or APIs updates `docs/` in the same change (use the `docs-maintainer` agent or `/noobit:docs-sync`).
+4. **Performance is a feature.** Prefer allocation-free paths, source-generated JSON, caching via FusionCache, and measured decisions (benchmark before optimizing, but don't write known-slow patterns).
+5. **Security by default.** Cookies HttpOnly+Secure+SameSite, antiforgery on state-changing endpoints, parameterized SQL only, no secrets in code or logs.
+
+## Working style
+
+- Keep manual intervention low: run builds/formatters/tests yourself instead of asking me to.
+- New solutions/projects: scaffold with `/noobit:new-fullstack`; deployment assets with `/noobit:deploy-setup`.
+- Language: code, comments, docs, and commits in English.

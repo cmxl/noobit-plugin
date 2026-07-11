@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File \"${CLAUDE_PLUGIN_ROOT}/hooks/format-file.ps1\"",
+            "timeout": 60,
+            "statusMessage": "Auto-formatting file..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-quality-gate.ps1\"",
+            "timeout": 30,
+            "statusMessage": "Checking quality gates..."
+          }
+        ]
+      }
+    ]
+  }
+}

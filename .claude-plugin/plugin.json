@@ -1,0 +1,9 @@
+{
+  "name": "noobit",
+  "version": "1.0.0",
+  "description": "Opinionated .NET 10+ / ASP.NET Core + Angular full-stack standards: FusionCache+Redis, EF Core/Dapper, RabbitMQ, cookie-BFF security, Docker/nginx/Let's Encrypt, xUnit v3 + Testcontainers, Vitest + Playwright, docs-as-code with Mermaid — plus automated review, test, docs agents and quality-gate hooks.",
+  "author": {
+    "name": "Tobias Haimerl",
+    "email": "tobias.haimerl@tecvia.com"
+  }
+}
