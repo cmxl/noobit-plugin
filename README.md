@@ -17,11 +17,12 @@ Opinionated full-stack standards for **.NET 10+ / ASP.NET Core + Angular (latest
 - **.NET SDK 10+** (`dotnet` on PATH) — used by the format hook and everything else
 - Node.js with project-local Prettier — the web format hook is a silent no-op without it
 - Docker — for Testcontainers-based integration tests and deployments
+- **External skills (recommended, not shipped here):** the Angular skills `angular-developer`, `angular-new-app`, `angular-ngrx-state` (frontend guidance used by `/noobit:new-fullstack`) and the `superpowers` plugin (process skills: brainstorming, TDD, debugging). Everything backend-side works without them.
 
 ## Install
 
 ```
-/plugin marketplace add <github-org>/noobit-plugin
+/plugin marketplace add cmxl/noobit-plugin
 /plugin install noobit@noobit
 ```
 
