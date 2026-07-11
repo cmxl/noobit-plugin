@@ -1,5 +1,6 @@
 {
   "name": "noobit",
+  "description": "noobit full-stack standards: .NET 10+/ASP.NET Core + Angular with FusionCache, RabbitMQ, cookie-BFF security, Docker/nginx hosting, and automated review/test/docs agents",
   "owner": {
     "name": "Tobias Haimerl",
     "email": "tobias.haimerl@tecvia.com"
