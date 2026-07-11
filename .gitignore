@@ -1,0 +1,13 @@
+# OS artifacts
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Local-only files (never commit machine-specific overrides or scratch work)
+*.local.*
+scratch/
+node_modules/

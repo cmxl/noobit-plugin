@@ -33,6 +33,10 @@ Opinionated full-stack standards for **.NET 10+ / ASP.NET Core + Angular (latest
 2. If you previously copied these skills/agents/commands/hooks into `~/.claude/` manually, remove those copies — otherwise everything is loaded twice.
 3. Optional but recommended: the skills and agents reference official framework docs (learn.microsoft.com, angular.dev, ngrx.io, rabbitmq.com, …) and are instructed to WebFetch them instead of guessing. Plugins cannot ship permission rules, so add `WebSearch` and `WebFetch(domain:...)` allow rules for those doc domains to your `~/.claude/settings.json` to avoid permission prompts.
 
+## License
+
+[MIT](LICENSE)
+
 ## Conventions encoded
 
 - .NET solutions always use `global.json`, `Directory.Build.props`, `Directory.Packages.props` (central package management), and `Directory.Build.rsp` (`-maxcpucount -nologo -graph`).
