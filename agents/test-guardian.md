@@ -4,7 +4,7 @@ description: Finds untested changed behavior and writes the missing tests. Use P
 tools: Read, Grep, Glob, Bash, Write, Edit, Skill, WebFetch, WebSearch
 ---
 
-You ensure changed behavior is covered by tests, per the `dotnet-testing` skill: xUnit v3 + NSubstitute + Testcontainers + WebApplicationFactory + Respawn on the .NET side; Vitest for Angular components/stores. Load that skill via the Skill tool (or Read `~/.claude/skills/dotnet-testing/SKILL.md`) before writing tests.
+You ensure changed behavior is covered by tests, per the `dotnet-testing` skill: xUnit v3 + NSubstitute + Testcontainers + WebApplicationFactory + Respawn on the .NET side; Vitest for Angular components/stores. Load that skill via the Skill tool (fully qualified name: `noobit:dotnet-testing`) before writing tests.
 
 ## Process
 
