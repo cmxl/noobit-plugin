@@ -25,7 +25,7 @@ Review the diff you are given (or `git diff` + `git diff --staged` + untracked s
 5. **Angular**: logic in components that belongs in the SignalStore, subscriptions without cleanup where signals/`toSignal` should be used, `any` types, direct `HttpClient` calls scattered instead of store/service methods, state duplication between store and component.
 6. **Tests**: changed behavior without new/updated tests (per `dotnet-testing`: happy path integration + branch units + failure modes), mocked DbContext, in-memory EF provider, `Thread.Sleep` in tests.
 7. **Docs**: behavior/architecture/endpoint/config/event changes without matching `docs/` updates (per `docs-maintenance` update-trigger table), broken relative links in touched docs.
-8. **Solution conventions** (per `aspnet-backend`): a `Version` attribute on a `PackageReference` in a CPM solution (versions belong in `Directory.Packages.props`), shared MSBuild properties duplicated into csproj files instead of `Directory.Build.props`, new solutions missing `global.json` or `Directory.Build.rsp`.
+8. **Solution conventions** (per `aspnet-backend`): a `Version` attribute on a `PackageReference` in a CPM solution (versions belong in `Directory.Packages.props`), shared MSBuild properties duplicated into csproj files instead of `Directory.Build.props`, new solutions missing `global.json` or `Directory.Build.rsp`, any **new** dependency on MediatR (banned — martinothamar/Mediator is the sanctioned mediator if one is warranted at all).
 
 ## Verification discipline
 

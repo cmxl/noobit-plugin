@@ -27,6 +27,7 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 | Database | MSSQL, PostgreSQL, or SQLite (per project) | `noobit:mssql` / `noobit:postgres` / `noobit:sqlite` |
 | Data access | EF Core by default; Dapper on measured hot paths | `noobit:data-access` |
 | Messaging | RabbitMQ for microservice communication | `noobit:rabbitmq-messaging` |
+| CQRS/mediator | Only if genuinely warranted: martinothamar/Mediator — **never MediatR** | `noobit:aspnet-backend` |
 | Auth | Custom cookie BFF — no OIDC provider, tokens never in the browser | `noobit:bff-security` |
 | Hosting | Docker, nginx reverse proxy, Let's Encrypt | `noobit:docker-nginx-deploy` |
 | Frontend | Angular latest LTS, standalone, signals | — |

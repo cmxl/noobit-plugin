@@ -104,6 +104,7 @@ Rules:
 - `IHttpClientFactory` for all outbound HTTP + `AddStandardResilienceHandler()` (Microsoft.Extensions.Http.Resilience).
 - Keyed services for multiple implementations: `AddKeyedSingleton<IStore>("redis", ...)`.
 - Background work: `BackgroundService` + `System.Threading.Channels` for in-process queues; RabbitMQ for cross-service (see `rabbitmq-messaging`).
+- Mediator/CQRS: the default is **no mediator** — endpoints call services directly. If a project genuinely evolves a CQRS dispatch need, use **martinothamar/Mediator** (`Mediator.SourceGenerator` + `Mediator.Abstractions`; source-generated, `ValueTask`-based, MIT, v3.x) — **never MediatR** (reflection-based, commercially licensed since v13).
 
 ## Performance checklist
 
@@ -126,6 +127,7 @@ Rules:
 | Catch-all try/catch in handlers | Global `IExceptionHandler` + ProblemDetails |
 | `Task.Run` in request handlers | It wastes a pool thread; just await |
 | Missing `CancellationToken` | Thread it through every async call |
+| Adding MediatR | If a mediator is warranted at all: martinothamar/Mediator (source-generated); MediatR is reflection-based and commercial since v13 |
 
 ## Official docs — verify, don't guess
 
@@ -133,5 +135,6 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - ASP.NET Core: https://learn.microsoft.com/en-us/aspnet/core/
 - .NET & C#: https://learn.microsoft.com/en-us/dotnet/
 - OpenTelemetry .NET: https://opentelemetry.io/docs/languages/dotnet/
+- Mediator (sanctioned CQRS package, if warranted): https://github.com/martinothamar/Mediator
 - **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
 - **Curated enterprise example codebases (dotnet/eShop, CleanArchitecture templates, async guidance — with what to study vs ignore): [references/example-codebases.md](references/example-codebases.md) — consult when designing service boundaries, aggregates, or event flows.**

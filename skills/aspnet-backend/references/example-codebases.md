@@ -10,7 +10,7 @@ Ignore: Aspire orchestration (we deploy Docker Compose + nginx), and its microse
 
 **jasontaylordev/CleanArchitecture** — https://github.com/jasontaylordev/CleanArchitecture — .NET 10 with an Angular frontend option, active; the closest thing to an established fullstack .NET+Angular reference (there is no Microsoft-official one).
 Study: solution organization, the Angular↔API integration shape, functional test setup.
-Ignore: the MediatR pipeline — MediatR 13+ is commercially licensed (12.x stays Apache-2.0), and our stack doesn't use it; endpoints call services directly.
+Ignore: the MediatR pipeline — MediatR 13+ is commercially licensed (12.x stays Apache-2.0), and our stack doesn't use it; endpoints call services directly. If a mediator is ever warranted, the sanctioned package is martinothamar/Mediator (source-generated, MIT — see `aspnet-backend`).
 
 **ardalis/CleanArchitecture** — https://github.com/ardalis/CleanArchitecture — ASP.NET Core 10, active (v11).
 Study: DDD building blocks — guard clauses, domain events, the Specification pattern *as a concept* for sharable query logic.
