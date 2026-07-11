@@ -104,6 +104,9 @@ Rules:
 - `IHttpClientFactory` for all outbound HTTP + `AddStandardResilienceHandler()` (Microsoft.Extensions.Http.Resilience — Polly v8 under the hood).
 - Non-HTTP resilience (external SDKs, RabbitMQ ops, anything flaky): **Polly v8** `ResiliencePipeline` via `AddResiliencePipeline` (Polly.Extensions) — never hand-rolled retry/`Task.Delay` loops, and use the v8 pipeline API, not the legacy v7 `Policy` API. EF's `EnableRetryOnFailure` already covers DB transients — don't double-wrap it in Polly.
 - Keyed services for multiple implementations: `AddKeyedSingleton<IStore>("redis", ...)`.
+- **Lifetimes**: scoped for anything touching the `DbContext` or per-request state; singleton for stateless services (`IFusionCache`, `NpgsqlDataSource`, options-backed services); transient only for cheap stateless helpers. Never capture a scoped service in a singleton — background services resolve scopes via `IServiceScopeFactory`.
+- **Errors are never swallowed**: an empty `catch` (or catch-and-continue without logging) is a review failure. Log with context and rethrow, handle meaningfully, or let the global `IExceptionHandler` translate it.
+- **Logging discipline**: message templates with named placeholders — `_logger.LogInformation("User {UserId} created order {OrderId}", userId, orderId)` — never string interpolation into the logger (it destroys structured logging and allocates even when the level is off; `LoggerMessage` source-gen avoids both).
 - Background work: `BackgroundService` + `System.Threading.Channels` for in-process queues; RabbitMQ for cross-service (see `rabbitmq-messaging`).
 - Mediator/CQRS: the default is **no mediator** — endpoints call services directly. If a project genuinely evolves a CQRS dispatch need, use **martinothamar/Mediator** (`Mediator.SourceGenerator` + `Mediator.Abstractions`; source-generated, `ValueTask`-based, MIT, v3.x) — **never MediatR** (reflection-based, commercially licensed since v13).
 
@@ -132,6 +135,9 @@ Rules:
 | NLog/log4net/`Console.WriteLine` logging | Serilog behind `ILogger<T>` — the only sanctioned logging framework |
 | Newtonsoft.Json anywhere | System.Text.Json with source generation — no exceptions in new code |
 | Hand-rolled retry loops (`for` + `Task.Delay`) | Polly v8 `ResiliencePipeline` (or the standard resilience handler for HTTP) |
+| Empty `catch` / silently swallowed exception | Log with context + rethrow, or handle meaningfully — silence is a review failure |
+| `$"interpolated {value}"` into `_logger` | Message template with named placeholders — keeps logs structured and cheap |
+| Scoped service captured in a singleton | `IServiceScopeFactory` scope per unit of work |
 
 ## Official docs — verify, don't guess
 
