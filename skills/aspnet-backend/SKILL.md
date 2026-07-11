@@ -132,3 +132,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - .NET & C#: https://learn.microsoft.com/en-us/dotnet/
 - OpenTelemetry .NET: https://opentelemetry.io/docs/languages/dotnet/
 - **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
+- **Curated enterprise example codebases (dotnet/eShop, CleanArchitecture templates, async guidance — with what to study vs ignore): [references/example-codebases.md](references/example-codebases.md) — consult when designing service boundaries, aggregates, or event flows.**
