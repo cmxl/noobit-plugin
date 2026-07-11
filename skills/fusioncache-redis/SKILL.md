@@ -101,3 +101,10 @@ Invalidate on write (explicit `RemoveAsync`/`RemoveByTagAsync` in the code path 
 | Caching entities with nav properties | Cache flat DTOs |
 | Invalidation without backplane in multi-node | Other nodes serve stale L1 for the full duration |
 | Redis down = app down | L2 problems must degrade to L1-only (soft timeouts + background distributed ops, as wired above) |
+
+## Official docs — verify, don't guess
+
+When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
+- FusionCache (docs index): https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/README.md
+- Redis: https://redis.io/docs/latest/
+- StackExchange.Redis client: https://stackexchange.github.io/StackExchange.Redis/

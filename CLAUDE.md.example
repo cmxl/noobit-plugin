@@ -35,5 +35,6 @@ working in that area.
 ## Working style
 
 - Keep manual intervention low: run builds/formatters/tests yourself instead of asking me to.
+- When unsure about a framework API or best practice, WebFetch/WebSearch the official docs instead of guessing: .NET/ASP.NET Core/EF Core → https://learn.microsoft.com/, Angular → https://angular.dev, NgRx SignalStore → https://ngrx.io/guide/signals/signal-store. Each skill lists its own doc links in an "Official docs" section.
 - New solutions/projects: scaffold with `/noobit:new-fullstack`; deployment assets with `/noobit:deploy-setup`.
 - Language: code, comments, docs, and commits in English.

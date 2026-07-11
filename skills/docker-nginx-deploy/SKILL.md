@@ -154,3 +154,11 @@ app.UseForwardedHeaders();   // first in the pipeline
 | Certs baked into images | letsencrypt volume shared nginx↔certbot |
 | Running as root | `USER $APP_UID`; writable paths mounted explicitly |
 | No healthchecks | Every service defines one; `depends_on.condition: service_healthy` |
+
+## Official docs — verify, don't guess
+
+When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
+- Docker: https://docs.docker.com/ (Compose: https://docs.docker.com/compose/)
+- Official .NET images: https://github.com/dotnet/dotnet-docker
+- nginx: https://nginx.org/en/docs/
+- certbot: https://certbot.eff.org/ | Let's Encrypt: https://letsencrypt.org/docs/

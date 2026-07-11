@@ -121,3 +121,10 @@ Rules:
 | Catch-all try/catch in handlers | Global `IExceptionHandler` + ProblemDetails |
 | `Task.Run` in request handlers | It wastes a pool thread; just await |
 | Missing `CancellationToken` | Thread it through every async call |
+
+## Official docs — verify, don't guess
+
+When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
+- ASP.NET Core: https://learn.microsoft.com/en-us/aspnet/core/
+- .NET & C#: https://learn.microsoft.com/en-us/dotnet/
+- OpenTelemetry .NET: https://opentelemetry.io/docs/languages/dotnet/

@@ -106,3 +106,10 @@ All endpoints `RequireAuthorization()` by default; opt **out** with `AllowAnonym
 | Data protection keys in container FS | Persist to Redis; cookies survive redeploys |
 | Downstream API reachable from internet | Private network; only BFF is public |
 | Login error says "user not found" | Uniform errors, rate limit, lockout |
+
+## Official docs — verify, don't guess
+
+When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing — for security code, never guess:
+- ASP.NET Core security: https://learn.microsoft.com/en-us/aspnet/core/security/
+- YARP: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/yarp/yarp-overview
+- OWASP CSRF Prevention Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html

@@ -82,3 +82,8 @@ The `docs-maintainer` agent / `/docs-sync` command automates this: it diffs the 
 | ASCII-art / image-file diagrams | Mermaid in the markdown |
 | Restating code line-by-line | Document intent, flows, and decisions — not syntax |
 | Editing accepted ADRs | New ADR that supersedes (link both) |
+
+## Official docs — verify, don't guess
+
+When diagram syntax is uncertain, WebFetch the official docs instead of guessing:
+- Mermaid: https://mermaid.js.org/intro/

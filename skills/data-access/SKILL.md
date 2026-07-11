@@ -87,3 +87,11 @@ SQLite in production: it's fine for single-node, low-write apps, but put all wri
 | `Database.Migrate()` on multi-instance startup | Migration bundle / deploy step |
 | Dapper with interpolated SQL | Parameters via anonymous object |
 | Opening one shared `DbConnection` singleton (MSSQL/SQLite) | Connection per operation; ADO.NET pools for you (Postgres: singleton `NpgsqlDataSource` is the exception and correct) |
+
+## Official docs — verify, don't guess
+
+When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
+- EF Core: https://learn.microsoft.com/en-us/ef/core/
+- Dapper: https://github.com/DapperLib/Dapper
+- Npgsql: https://www.npgsql.org/doc/ (EF Core provider: https://www.npgsql.org/efcore/)
+- Microsoft.Data.Sqlite: https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/

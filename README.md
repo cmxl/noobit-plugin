@@ -31,6 +31,7 @@ Opinionated full-stack standards for **.NET 10+ / ASP.NET Core + Angular (latest
 
 1. Copy [`CLAUDE.md.example`](CLAUDE.md.example) into your `~/.claude/CLAUDE.md` (or your team repo's `CLAUDE.md`) — the always-on quality gates live there, since plugins can't inject global instructions.
 2. If you previously copied these skills/agents/commands/hooks into `~/.claude/` manually, remove those copies — otherwise everything is loaded twice.
+3. Optional but recommended: the skills and agents reference official framework docs (learn.microsoft.com, angular.dev, ngrx.io, rabbitmq.com, …) and are instructed to WebFetch them instead of guessing. Plugins cannot ship permission rules, so add `WebSearch` and `WebFetch(domain:...)` allow rules for those doc domains to your `~/.claude/settings.json` to avoid permission prompts.
 
 ## Conventions encoded
 

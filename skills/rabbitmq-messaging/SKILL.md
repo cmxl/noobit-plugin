@@ -98,3 +98,9 @@ await channel.BasicConsumeAsync(queue, autoAck: false, consumer, ct);
 | New connection per publish | Singleton connection, channel per loop |
 | Fat events carrying whole entities | Carry ids + the facts that changed; consumers fetch what they need |
 | Rabbit for sync request/response | HTTP with resilience handler |
+
+## Official docs — verify, don't guess
+
+When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
+- RabbitMQ: https://www.rabbitmq.com/docs
+- .NET client guide (v7): https://www.rabbitmq.com/client-libraries/dotnet-api-guide

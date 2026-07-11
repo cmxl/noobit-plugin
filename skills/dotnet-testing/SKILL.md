@@ -118,3 +118,13 @@ Testcontainers needs Docker running. Containers are shared per collection — a 
 | Asserting internal calls (`Received()`) as the main assertion | Assert outputs and state; `Received()` only for ports with no observable outcome (e.g. published message) |
 | Test order dependence | `ResetAsync()` in InitializeAsync; no static state |
 | Skipping tests to "go fast" | Coverage is the definition of done here |
+
+## Official docs — verify, don't guess
+
+When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
+- xUnit v3: https://xunit.net/docs/getting-started/v3/getting-started
+- NSubstitute: https://nsubstitute.github.io/
+- Testcontainers for .NET: https://dotnet.testcontainers.org/
+- Respawn: https://github.com/jbogard/Respawn
+- Integration tests / WebApplicationFactory: https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests
+- Vitest: https://vitest.dev/ | Playwright: https://playwright.dev/
