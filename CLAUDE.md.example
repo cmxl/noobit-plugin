@@ -29,10 +29,11 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 | Messaging | RabbitMQ for microservice communication | `noobit:rabbitmq-messaging` |
 | CQRS/mediator | Only if genuinely warranted: martinothamar/Mediator — **never MediatR** | `noobit:aspnet-backend` |
 | Auth | Custom cookie BFF — no OIDC provider, tokens never in the browser | `noobit:bff-security` |
+| Logging | Serilog (structured), behind `ILogger<T>` — never NLog/log4net | `noobit:aspnet-backend` |
 | Hosting | Docker, nginx reverse proxy, Let's Encrypt | `noobit:docker-nginx-deploy` |
 | Frontend | Angular latest LTS, standalone, signals | — |
 | State | NgRx SignalStore | — |
-| .NET tests | xUnit v3 + NSubstitute + Testcontainers + WebApplicationFactory | `noobit:dotnet-testing` |
+| .NET tests | xUnit v3 + NSubstitute (never Moq) + Testcontainers + WebApplicationFactory | `noobit:dotnet-testing` |
 | Angular tests | Vitest (unit), Playwright (e2e) | — |
 | Docs | Markdown in `docs/`, cross-referenced, Mermaid diagrams | `noobit:docs-maintenance` |
 

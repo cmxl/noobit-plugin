@@ -7,7 +7,7 @@ description: Use when writing or fixing .NET tests — unit tests, integration t
 
 ## Overview
 
-Standard: **xUnit v3** (`xunit.v3` package, runs on Microsoft.Testing.Platform), **NSubstitute** for mocks, **Testcontainers** for real infrastructure in integration tests, **WebApplicationFactory** for in-process API tests, **Respawn** for DB cleanup between tests. Real dependencies over mocks wherever practical — never mock `DbContext` or `IFusionCache`.
+Standard: **xUnit v3** (`xunit.v3` package, runs on Microsoft.Testing.Platform), **NSubstitute** for mocks (**never Moq** — NSubstitute is the only sanctioned mocking library), **Testcontainers** for real infrastructure in integration tests (databases, Redis, RabbitMQ run as Docker containers), **WebApplicationFactory** for in-process API tests, **Respawn** for DB cleanup between tests. Real dependencies over mocks wherever practical — never mock `DbContext` or `IFusionCache`.
 
 Two test projects per service:
 - `*.Tests` — unit: domain logic, handlers with substituted ports, no I/O, milliseconds.
@@ -110,10 +110,19 @@ xUnit v3 runs on Microsoft.Testing.Platform (MTP): filters use MTP flags after `
 
 Testcontainers needs Docker running. Containers are shared per collection — a full integration suite should boot infrastructure once, not per test class.
 
+Testcontainers rules (per the official best-practices doc):
+- **Pin image versions** (`postgres:17`, never `latest` or the module default).
+- Never assign static container names or static host-port bindings — random names/ports are what make parallel and CI runs safe; read endpoints via `GetConnectionString()`/`GetMappedPublicPort()`.
+- Connect via the container's `Hostname` property, not `localhost`.
+- Container-to-container communication goes through networks + `WithNetworkAliases`, not mapped host ports.
+- Copy files in with `WithResourceMapping`, don't bind-mount host paths.
+- Never disable the Resource Reaper — it's what cleans up after crashed runs.
+
 ## Common mistakes
 
 | Mistake | Fix |
 |---|---|
+| Moq (or any mocking lib besides NSubstitute) | NSubstitute — the only sanctioned mocking library |
 | Mocking DbContext/IQueryable | Testcontainers + real provider |
 | In-memory EF provider | Same — it lies about SQL semantics |
 | New container per test class | Collection fixture, Respawn between tests |
@@ -126,7 +135,7 @@ Testcontainers needs Docker running. Containers are shared per collection — a 
 When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
 - xUnit v3: https://xunit.net/docs/getting-started/v3/getting-started
 - NSubstitute: https://nsubstitute.github.io/
-- Testcontainers for .NET: https://dotnet.testcontainers.org/
+- Testcontainers for .NET: https://dotnet.testcontainers.org/ (best practices: https://dotnet.testcontainers.org/api/best_practices/)
 - Respawn: https://github.com/jbogard/Respawn
 - Integration tests / WebApplicationFactory: https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests
 - Vitest: https://vitest.dev/ | Playwright: https://playwright.dev/

@@ -114,7 +114,7 @@ Rules:
 - **Allocations**: `Span<T>`/`Memory<T>` for parsing, `ArrayPool<T>`/`ObjectPool<T>` in hot loops, `StringBuilder` pooling, avoid LINQ in per-request hot paths.
 - **Server**: Kestrel behind nginx — nginx terminates TLS/HTTP2 and proxies upstream over HTTP/1.1; response compression only at nginx (don't double-compress).
 - **Startup**: `builder.Services.AddRequestTimeouts()`, health checks at `/health/live` and `/health/ready` (`AddHealthChecks` + Redis/DB/Rabbit checks).
-- **Observability**: OpenTelemetry (traces + metrics) with OTLP exporter; `ILogger<T>` with `LoggerMessage` source-gen for hot-path logs.
+- **Observability**: OpenTelemetry (traces + metrics) with OTLP exporter. **Serilog is the logging framework** (`Serilog.AspNetCore`, Serilog 4.x): two-stage init (bootstrap logger for startup failures, then full config from `appsettings`), `UseSerilogRequestLogging()` for one structured event per request instead of the noisy defaults, JSON console sink in containers. Application code depends on `ILogger<T>` + `LoggerMessage` source-gen only — Serilog is the backend, not an API to code against (no static `Log.` calls in app code).
 
 ## Common mistakes
 
@@ -128,6 +128,7 @@ Rules:
 | `Task.Run` in request handlers | It wastes a pool thread; just await |
 | Missing `CancellationToken` | Thread it through every async call |
 | Adding MediatR | If a mediator is warranted at all: martinothamar/Mediator (source-generated); MediatR is reflection-based and commercial since v13 |
+| NLog/log4net/`Console.WriteLine` logging | Serilog behind `ILogger<T>` — the only sanctioned logging framework |
 
 ## Official docs — verify, don't guess
 
@@ -136,5 +137,6 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - .NET & C#: https://learn.microsoft.com/en-us/dotnet/
 - OpenTelemetry .NET: https://opentelemetry.io/docs/languages/dotnet/
 - Mediator (sanctioned CQRS package, if warranted): https://github.com/martinothamar/Mediator
+- Serilog: https://github.com/serilog/serilog (ASP.NET Core integration: https://github.com/serilog/serilog-aspnetcore)
 - **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
 - **Curated enterprise example codebases (dotnet/eShop, CleanArchitecture templates, async guidance — with what to study vs ignore): [references/example-codebases.md](references/example-codebases.md) — consult when designing service boundaries, aggregates, or event flows.**
