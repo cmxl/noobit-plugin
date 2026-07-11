@@ -198,6 +198,43 @@ FROM (<query>) q;                                                  -- join old v
 `ISNULL(CONVERT(nvarchar(max), Col), N'~NULL~')` before concatenating, and always include a delimiter so
 `('ab','c')` ≠ `('a','bc')`.
 
+## Ready-to-run diagnostics
+
+Top resource consumers from Query Store:
+
+```sql
+SELECT TOP 10 qt.query_sql_text, rs.avg_duration, rs.avg_logical_io_reads, rs.count_executions
+FROM sys.query_store_query_text qt
+JOIN sys.query_store_query q ON qt.query_text_id = q.query_text_id
+JOIN sys.query_store_plan p ON q.query_id = p.query_id
+JOIN sys.query_store_runtime_stats rs ON p.plan_id = rs.plan_id
+ORDER BY rs.avg_duration DESC;
+```
+
+Missing-index suggestions (treat as *hints* — the DMV over-includes columns and ignores overlapping indexes; design per the index rules above, never create verbatim):
+
+```sql
+SELECT CONVERT(decimal(18,2), migs.avg_user_impact * migs.user_seeks) AS Impact,
+       OBJECT_NAME(mid.object_id) AS TableName,
+       mid.equality_columns, mid.inequality_columns, mid.included_columns
+FROM sys.dm_db_missing_index_groups mig
+JOIN sys.dm_db_missing_index_group_stats migs ON mig.index_group_handle = migs.group_handle
+JOIN sys.dm_db_missing_index_details mid ON mig.index_handle = mid.index_handle
+WHERE mid.database_id = DB_ID()
+ORDER BY Impact DESC;
+```
+
+Mass deletes in batches — one giant `DELETE` escalates locks and bloats the log:
+
+```sql
+WHILE 1 = 1
+BEGIN
+    DELETE TOP (10000) FROM Logs WHERE CreatedAt < @cutoff;
+    IF @@ROWCOUNT = 0 BREAK;
+    WAITFOR DELAY '00:00:01';   -- let other work breathe between batches
+END
+```
+
 ## Anti-patterns
 
 - **`NOLOCK` as a go-faster switch** — dirty/double/missed reads and error 601 are documented behavior, not edge

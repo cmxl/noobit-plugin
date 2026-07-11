@@ -19,6 +19,14 @@ Never tune blind — one change at a time, measured before and after:
 4. **Fix one thing** (index, rewrite, statistics), re-measure logical reads — the stable metric; duration is noisy.
 5. **If the query text changed, run the data-equivalence check below before shipping.**
 
+### Reading `.sqlplan` exports
+
+When given a `.sqlplan` file (SSMS / Query Store / Azure Data Studio export), first check whether the repo has a local plan-analyzer script — prefer it over hand-parsing the plan XML, and extend it rather than working around it. Whatever the tooling, the highest-value signals in a plan:
+- `ParameterCompiledValue` vs `ParameterRuntimeValue` side by side — a large mismatch is the parameter-sniffing signature.
+- Per-operator `RowsRead` vs `Rows`: `RowsRead ≥ 10× Rows` means the predicate sits in the residual filter instead of the seek — fix key order or add the column to the index key.
+- Warnings elements: spills, `PlanAffectingConvert` (implicit conversion), `NoJoinPredicate` (cartesian!), `ColumnsWithNoStatistics`, excessive memory grants.
+- `StatementOptmEarlyAbortReason="TimeOut"` — the optimizer gave up; the plan may be far from optimal even if it looks reasonable.
+
 ## Query rewrite → data-equivalence check (mandatory)
 
 A rewritten query must return the **same rows, same columns, same values**. Prove it, don't eyeball it:

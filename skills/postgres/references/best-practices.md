@@ -175,6 +175,30 @@ ORDER BY total_exec_time DESC LIMIT 20;
 - Batching: `NpgsqlBatch` sends multiple statements in one round trip. Large rows: `CommandBehavior.SequentialAccess` streams instead of buffering (read columns in order); or raise `Read Buffer Size`.
 - Always use parameters — interpolated SQL defeats auto-preparation (every literal is a new statement) besides the injection risk. `Enlist=false` if you never use TransactionScope and cycle connections heavily.
 
+## Ready-to-run diagnostics
+
+Top offenders from `pg_stat_statements`:
+
+```sql
+SELECT substring(query, 1, 100) AS query, calls,
+       round(total_exec_time::numeric, 2) AS total_ms,
+       round(mean_exec_time::numeric, 2) AS avg_ms, rows
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 20;
+```
+
+Unused indexes (write tax with zero read benefit — verify over a representative workload window before dropping):
+
+```sql
+SELECT schemaname || '.' || relname AS "table", indexrelname AS index,
+       idx_scan AS times_used,
+       pg_size_pretty(pg_relation_size(indexrelid)) AS size
+FROM pg_stat_user_indexes
+WHERE idx_scan = 0 AND indexrelname NOT LIKE '%_pkey'
+ORDER BY pg_relation_size(indexrelid) DESC;
+```
+
 ## Anti-patterns
 
 - `OFFSET`/`LIMIT` for deep pagination — linear cost; use keyset (above).
