@@ -1,6 +1,6 @@
 ---
 name: nginx-deploy
-description: Use when configuring nginx — reverse proxy in front of ASP.NET Core, TLS/HTTPS/Let's Encrypt/certbot, HTTP/2, gzip, WebSocket/SignalR proxying, forwarded headers, or exposing a hosted app stack to the internet.
+description: Use when configuring nginx — reverse proxy in front of ASP.NET Core, TLS/HTTPS/Let's Encrypt/certbot, HTTP/2, gzip, WebSocket/SignalR proxying, forwarded headers, production deployment, or exposing a hosted app stack to the internet.
 ---
 
 # nginx reverse proxy + Let's Encrypt

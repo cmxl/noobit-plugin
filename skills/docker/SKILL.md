@@ -123,7 +123,7 @@ Never `docker compose up --build` for a one-service change — it evaluates and 
 | Mistake | Fix |
 |---|---|
 | Copying the whole repo before `dotnet restore`/`npm ci` | Manifest-first COPY ordering (Dockerfile above) |
-| `apt-get update` in its own `RUN` | Combine with install + `rm -rf /var/lib/apt/lists/*` in one layer |
+| `apt-get update` in its own `RUN` | Combine with install + `rm -rf /var/lib/apt/lists/*` in one layer (unless using the apt cache-mount variant — see references) |
 | No `.dockerignore` | `**/bin`, `**/obj`, `node_modules`, `dist`, `.git` |
 | Secrets as `ENV`/`ARG` in the Dockerfile | Persist in image history — runtime env or compose `secrets:` |
 | `latest` image tags in prod | Pin major.minor; digest-pin for supply-chain safety |

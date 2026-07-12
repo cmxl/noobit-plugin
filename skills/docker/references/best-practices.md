@@ -82,8 +82,8 @@ must exist there. Options, in order of preference for this stack:
   `ConnectionStrings__Default__FILE`-style indirection you implement.
 - **Databases/Redis/RabbitMQ on an internal network only** — no `ports:` on them, ever; only nginx
   publishes 80/443. For belt-and-braces, mark the network `internal: true` if the services don't
-  need outbound internet (note: blocks image-pull-time only, not `docker pull`; DB migrations and
-  package feeds still work at build time on the host).
+  need outbound internet (note: `internal: true` cuts external egress for containers on that
+  network at runtime; image pulls and builds happen on the host and are unaffected).
 - `restart: unless-stopped` (or `always`) on every long-running service — Compose's documented
   mechanism for surviving crashes and reboots; there is no supervisor otherwise.
 - **Resource limits** work with plain `docker compose up` via
@@ -129,13 +129,17 @@ must exist there. Options, in order of preference for this stack:
   therefore cheap and stays the default; a glob like `COPY src/**/*.csproj` does NOT preserve the
   directory structure and silently breaks restore.
 - Alternative that needs no csproj COPY list at all: restore from a bind mount —
-  `RUN --mount=type=bind,source=.,target=/ctx --mount=type=cache,id=nuget,target=/root/.nuget/packages dotnet restore /ctx/App.sln`.
-  A bind mount is read-only by default and is not committed to any layer — nothing is copied into
-  the image, and `source`/`from` default to the build context root if omitted. This step
-  effectively re-runs whenever anything in the mounted context changes, but with the NuGet cache
-  mount in place that re-run is a fast no-op restore, not a re-download. Prefer it when the csproj
-  list is large and churns; prefer the explicit COPY list when the context is small and stable, so
-  unrelated file edits don't re-trigger the restore step at all.
+  `RUN --mount=type=bind,source=.,target=/ctx,rw --mount=type=cache,id=nuget,target=/root/.nuget/packages dotnet restore /ctx/App.sln`.
+  RUN bind mounts are read-only by default, and `dotnet restore` writes `obj/project.assets.json`
+  plus `obj/*.nuget.g.props`/`.targets` into every project directory under `/ctx` — hence the
+  `,rw`. Those writes still don't land in any image layer: a `rw` bind mount's contents are
+  discarded when the step completes, so the restored `obj/` output never gets committed. The
+  pattern's real value is warming the NuGet cache mount — with it in place, the re-restore that
+  `dotnet publish` triggers later takes seconds instead of re-downloading packages. This step still
+  effectively re-runs whenever anything in the mounted context changes, but that re-run is now a
+  fast no-op restore. Prefer it when the csproj list is large and churns; prefer the explicit COPY
+  list when the context is small and stable, so unrelated file edits don't re-trigger the restore
+  step at all.
 
 ### Trimming, ReadyToRun, NativeAOT — image size vs startup vs risk (.NET deployment docs)
 
