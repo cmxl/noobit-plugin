@@ -33,7 +33,7 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 | CLI apps | Spectre.Console (+ Spectre.Console.Cli for command apps) | `noobit:aspnet-backend` |
 | Auth | Custom cookie BFF — no OIDC provider, tokens never in the browser | `noobit:bff-security` |
 | Logging | Serilog (structured), behind `ILogger<T>` — never NLog/log4net | `noobit:aspnet-backend` |
-| Hosting | Docker, nginx reverse proxy, Let's Encrypt | `noobit:docker-nginx-deploy` |
+| Hosting | Docker, nginx reverse proxy, Let's Encrypt | `noobit:docker` / `noobit:nginx-deploy` |
 | Frontend | Angular latest LTS, standalone, signals | `angular-developer` (external) |
 | State | NgRx SignalStore | `noobit:angular-ngrx-state` |
 | .NET tests | xUnit v3 + NSubstitute (never Moq) + Testcontainers + WebApplicationFactory | `noobit:dotnet-testing` |

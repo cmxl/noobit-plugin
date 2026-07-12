@@ -82,7 +82,7 @@ https://app.example.com/api/gw/... → YARP → downstream services (BFF attache
 ## Security headers & middleware order
 
 ```csharp
-app.UseForwardedHeaders();       // nginx in front — X-Forwarded-For/Proto (see docker-nginx-deploy)
+app.UseForwardedHeaders();       // nginx in front — X-Forwarded-For/Proto (see nginx-deploy)
 app.UseHsts();
 // CSP etc. via middleware:
 ctx.Response.Headers.ContentSecurityPolicy =

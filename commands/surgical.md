@@ -28,7 +28,7 @@ Run in order; announce each phase with a one-line header. Phases marked *(condit
 4. Output a 3–4 line triage summary (task type, layer, repos in play, which conditional phases will run).
 
 ### Phase 1 — Research (skills-first → docs-confirm)
-Load the noobit skills matching the classified layer (`aspnet-backend`, `data-access` + provider skill, `fusioncache-redis`, `rabbitmq-messaging`, `bff-security`, `docker-nginx-deploy`, `angular-ngrx-state`; the external Angular skills if installed). WebFetch their official-docs links where behavior is version-sensitive. Output a short best-practice brief with sources that constrains the fix. *(Trim to a sanity check for trivial mechanical edits.)*
+Load the noobit skills matching the classified layer (`aspnet-backend`, `data-access` + provider skill, `fusioncache-redis`, `rabbitmq-messaging`, `bff-security`, `docker`, `nginx-deploy`, `angular-ngrx-state`; the external Angular skills if installed). WebFetch their official-docs links where behavior is version-sensitive. Output a short best-practice brief with sources that constrains the fix. *(Trim to a sanity check for trivial mechanical edits.)*
 
 ### Phase 2 — Investigate & Reproduce
 1. Drive **superpowers:systematic-debugging** — root cause, not nearest symptom. Use the `Explore` agent for broad fan-out searches.

@@ -16,7 +16,7 @@ docs/
   README.md              # index — links to every doc with a one-line description
   architecture.md        # system overview + container/component Mermaid diagrams
   getting-started.md     # clone → run locally (docker compose) → test
-  deployment.md          # build, compose, nginx, certs (see docker-nginx-deploy)
+  deployment.md          # build, compose, nginx, certs (see docker / nginx-deploy)
   security.md            # BFF model, cookies, CSRF, headers
   api.md                 # endpoint overview (detail lives in OpenAPI; this is the map)
   data-model.md          # ER diagram + ownership/consistency notes
