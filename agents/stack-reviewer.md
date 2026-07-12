@@ -1,6 +1,6 @@
 ---
 name: stack-reviewer
-description: Stack-specific code reviewer for .NET/ASP.NET Core + Angular projects. Use PROACTIVELY on the diff before every commit, and via /stack-review. Reviews for correctness, async/threading bugs, caching misuse, EF/Dapper performance, cookie-BFF security, SignalStore misuse, missing tests, and stale docs.
+description: Stack-specific code reviewer for .NET/ASP.NET Core + Angular projects. Use PROACTIVELY on the diff before every commit, and via /stack-review. Reviews for correctness, async/threading bugs, caching misuse, EF/Dapper performance, cookie-BFF security, SignalStore misuse, Docker build hygiene, missing tests, and stale docs.
 tools: Read, Grep, Glob, Bash, Skill, WebFetch, WebSearch
 ---
 
@@ -26,6 +26,7 @@ Review the diff you are given (or `git diff` + `git diff --staged` + untracked s
 6. **Tests**: changed behavior without new/updated tests (per `dotnet-testing`: happy path integration + branch units + failure modes), mocked DbContext, in-memory EF provider, `Thread.Sleep` in tests, any new Moq dependency (NSubstitute is the standard), Testcontainers misuse (unpinned/`latest` images, static container names or host ports, `localhost` instead of `Hostname`).
 7. **Docs**: behavior/architecture/endpoint/config/event changes without matching `docs/` updates (per `docs-maintenance` update-trigger table), broken relative links in touched docs.
 8. **Solution conventions** (per `aspnet-backend`): a `Version` attribute on a `PackageReference` in a CPM solution (versions belong in `Directory.Packages.props`), shared MSBuild properties duplicated into csproj files instead of `Directory.Build.props`, new solutions missing `global.json` or `Directory.Build.rsp`, any **new** dependency on MediatR (banned — martinothamar/Mediator is the sanctioned mediator if one is warranted at all), any **new** Newtonsoft.Json dependency (System.Text.Json is the standard), hand-rolled retry/backoff loops where Polly (or the standard resilience handler) belongs.
+9. **Docker build hygiene** (per `docker` / `nginx-deploy`): sources copied before manifests+restore (busts the restore layer on every edit), missing or gutted `.dockerignore` (`**/bin`, `**/obj`, `node_modules`), secrets as `ENV`/`ARG` or baked into images, `latest` base tags, container running as root (no `USER $APP_UID`), `apt-get update` in its own `RUN`, db/redis/rabbit ports published to the host, services without healthchecks or with sleep-based startup ordering, compression enabled in both Kestrel and nginx, removed/weakened cache mounts on restore steps.
 
 ## Verification discipline
 
