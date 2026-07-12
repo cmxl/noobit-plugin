@@ -111,8 +111,9 @@ must exist there. Options, in order of preference for this stack:
   docs' own apt example uses this), or use `sharing=private` / a distinct `id` per build to avoid
   sharing at all.
 - apt variant for the runtime stage's wget install:
-  `RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked apt-get update && apt-get install -y --no-install-recommends wget`
+  `RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked rm -f /etc/apt/apt.conf.d/docker-clean && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache && apt-get update && apt-get install -y --no-install-recommends wget`
   (with cache mounts you skip the `rm -rf /var/lib/apt/lists/*` since lists live in the mount).
+  Debian/Ubuntu images ship a `docker-clean` config that purges downloaded packages immediately, so without removing it only the lists mount pays off.
   Treat cache mount contents as best-effort: "your build should work with any contents of the
   cache directory" since another build may overwrite files or GC may clean them.
 - Cache mounts are builder-local: the default cache storage is internal to the BuildKit instance
