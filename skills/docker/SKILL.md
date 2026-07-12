@@ -140,4 +140,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Compose: https://docs.docker.com/compose/
 - Official .NET images: https://github.com/dotnet/dotnet-docker
 - .NET trimming/AOT/containers: https://learn.microsoft.com/en-us/dotnet/core/deploying/
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.
+- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
