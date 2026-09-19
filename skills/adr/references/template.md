@@ -9,6 +9,10 @@ the codebase/system right now (verified against the repo, not asserted from memo
 ## Decision
 <What we chose. State it plainly and actively: "We will …".>
 
+## Alternatives considered
+<One bullet per real option not chosen: "**Option** — rejected because …". If a full RFC explored the
+options, summarise here and link it (`../rfc/<file>.md`). Omit only if there was genuinely no alternative.>
+
 ## Consequences
 <The trade-offs being accepted — good and bad — and the second-order effects: what gets easier, what
 gets harder, what we can no longer do, and how reversible this is.>
