@@ -1,0 +1,14 @@
+# <Title — the decision as a short noun phrase>
+
+- **Status** — Proposed <YYYY-MM-DD>
+
+## Context
+<The forces and constraints at the time: the problem, the pressures, and what is actually true about
+the codebase/system right now (verified against the repo, not asserted from memory).>
+
+## Decision
+<What we chose. State it plainly and actively: "We will …".>
+
+## Consequences
+<The trade-offs being accepted — good and bad — and the second-order effects: what gets easier, what
+gets harder, what we can no longer do, and how reversible this is.>
