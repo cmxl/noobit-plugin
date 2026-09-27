@@ -57,4 +57,5 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 - New solutions/projects: scaffold with `/noobit:new-fullstack`; deployment assets with `/noobit:deploy-setup`. Non-trivial bugfixes and changes: `/noobit:surgical` (gated end-to-end workflow).
 - **Specs & plans live in `work/`**, not `docs/`: superpowers brainstorming output goes to `work/specs/YYYY-MM-DD-<topic>-design.md`, implementation plans to `work/plans/` (this preference overrides those skills' default `docs/superpowers/...` location). `work/` is working material — committed, but never part of the `docs/` index or cross-reference web.
 - **TDD is the primary path** (superpowers test-driven-development) when implementing; the `test-guardian` agent is the safety net that catches coverage gaps afterwards — not a license to write tests after the fact.
+- **Ad-hoc scripts stay simple** (pwsh, bash, az CLI): plain commands, one line per change — e.g. one `az appconfig kv set` line per setting — no functions/modules/loops/param blocks unless I ask or the task needs real logic. See `noobit:simple-scripts`.
 - Language: code, comments, docs, and commits in English.
