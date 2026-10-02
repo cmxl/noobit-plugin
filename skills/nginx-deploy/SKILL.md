@@ -13,11 +13,16 @@ A single **nginx** reverse proxy terminates TLS with **Let's Encrypt** certs in 
 
 ```yaml
   nginx:
-    image: nginx:stable
+    image: nginx:1.30-alpine   # pin the stable line, never a floating tag
     profiles: [prod]       # server .env: COMPOSE_PROFILES=prod — keeps nginx off dev machines
+    restart: unless-stopped
     # periodic reload picks up renewed Let's Encrypt certs — the certbot container has no
-    # docker CLI/socket, so a certbot --deploy-hook can NOT reload nginx from over there
-    command: ["/bin/sh", "-c", "while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;'"]
+    # docker CLI/socket, so a certbot --deploy-hook can NOT reload nginx from over there.
+    # The script waits on nginx: if the nginx master dies the container exits and `restart:` recovers
+    # it. The trap forwards docker stop (image STOPSIGNAL is SIGQUIT) as a graceful quit — a bare sh
+    # as PID 1 ignores it and gets SIGKILLed after 10 s. Trade-off: overriding `command` skips the
+    # image's /docker-entrypoint.d scripts (envsubst templates, IPv6 listen auto-patching).
+    command: ["/bin/sh", "-c", "(while :; do sleep 6h; nginx -s reload; done) & nginx -g 'daemon off;' & n=$$!; trap 'nginx -s quit; wait $$n' TERM QUIT; wait $$n"]
     ports: ["80:80", "443:443"]
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
@@ -26,8 +31,9 @@ A single **nginx** reverse proxy terminates TLS with **Let's Encrypt** certs in 
     depends_on: [app]
     networks: [internal]
   certbot:
-    image: certbot/certbot
+    image: certbot/certbot:v5.8.0
     profiles: [prod]
+    restart: unless-stopped
     entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $${!}; done"]
     volumes:
       - certbot-webroot:/var/www/certbot
@@ -39,6 +45,17 @@ Plus two named volumes on the stack: `certbot-webroot: {}`, `letsencrypt: {}`.
 ## nginx server block
 
 ```nginx
+server_tokens off;
+resolver 127.0.0.11 valid=10s;   # Docker's embedded DNS: re-resolve `app` after a redeploy
+upstream app { zone app 64k; server app:8080 resolve; }   # OSS `resolve` needs nginx 1.27.3+
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+
+server {                          # catch-all: unknown Host/SNI never reaches the app
+    listen 80 default_server;
+    listen 443 ssl default_server;
+    ssl_reject_handshake on;      # no cert needed here
+    return 444;
+}
 server {
     listen 80;
     server_name app.example.com;
@@ -53,18 +70,18 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/app.example.com/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    gzip on; gzip_types application/json application/javascript text/css image/svg+xml;
-    client_max_body_size 10m;
+    gzip on; gzip_vary on; gzip_types application/json application/javascript text/css image/svg+xml;
+    client_max_body_size 30000000;   # = Kestrel MaxRequestBodySize default (30,000,000 bytes) — change both together
 
     location / {
-        proxy_pass http://app:8080;
+        proxy_pass http://app;     # upstream above — a literal app:8080 resolves once at startup
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         # SignalR/WebSockets:
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $http_connection;
+        proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 100s;
     }
 }
@@ -77,18 +94,27 @@ builder.Services.Configure<ForwardedHeadersOptions>(o =>
 {
     o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     // KnownNetworks is [Obsolete] in .NET 10 (build fails with warnings-as-errors) — use KnownIPNetworks
-    o.KnownIPNetworks.Clear(); o.KnownProxies.Clear(); // trust the compose-internal proxy
+    // Defaults trust loopback only; nginx is another container. Clearing both trusts ANY source —
+    // safe only while the app port is never published. Narrow it to the compose network's fixed
+    // subnet (docker skeleton: 172.28.0.0/16), read from config so compose and app change together:
+    o.KnownIPNetworks.Clear(); o.KnownProxies.Clear();
+    o.KnownIPNetworks.Add(System.Net.IPNetwork.Parse(builder.Configuration["ForwardedHeaders:KnownNetwork"]!));
 });
 app.UseForwardedHeaders();   // first in the pipeline
 ```
 
+Also set `AllowedHosts` (appsettings) to the real hostname(s) instead of `*` — defense in depth behind the catch-all server.
+
 ## First-time cert issuance
 
-1. Start nginx with only the port-80 server block.
-2. `docker compose run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d app.example.com --email you@example.com --agree-tos --no-eff-email`
+1. Start nginx with only the port-80 server block (plus the catch-all — it needs no cert).
+2. `docker compose run --rm --entrypoint certbot certbot certonly -n --webroot -w /var/www/certbot -d app.example.com --agree-tos`
    `--entrypoint certbot` is required: the service's entrypoint is the renew loop, which would swallow
-   `certonly …` as ignored script arguments and never issue the first certificate.
+   `certonly …` as ignored script arguments and never issue the first certificate. No `--email`
+   needed with `-n`: Let's Encrypt stopped expiry mails in June 2025, so monitor expiry yourself;
+   add `-m you@example.com --no-eff-email` only if you want an account contact.
 3. Enable the 443 block, `docker compose exec nginx nginx -s reload`. Renewal is handled by the certbot loop; renewed certs are picked up by the nginx service's 6-hourly reload loop (see services above).
+4. Smoke-test renewal: `docker compose run --rm --entrypoint certbot certbot renew --dry-run` (staging server, nothing saved).
 
 ## Common mistakes
 
@@ -100,7 +126,9 @@ app.UseForwardedHeaders();   // first in the pipeline
 | `ssl_stapling on` with Let's Encrypt | LE OCSP responders shut down Aug 2025 — remove it |
 | `proxy_buffering off` globally "for performance" | Keep on; disable per-location or via `X-Accel-Buffering: no` for streams only |
 | Wildcard cert "to keep it simple" | Forces DNS-01 + API creds on the host; per-hostname HTTP-01 instead |
-| Trusting all proxies while publishing the app port | Only nginx reachable (internal network), app port never published — then clearing known networks is safe |
+| Trusting all proxies while publishing the app port | App port never published + `KnownIPNetworks` narrowed to the compose network |
+| `proxy_pass http://app:8080` (literal host) | Resolved once at startup → 502 after `up --no-deps app` gives a new IP; use `resolver` + `upstream … resolve` |
+| No `default_server` | First server block catches every Host → Host-header poisoning; keep the catch-all |
 
 ## Official docs — verify, don't guess
 

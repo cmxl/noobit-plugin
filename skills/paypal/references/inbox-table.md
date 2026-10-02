@@ -152,6 +152,7 @@ result of the worker that reclaimed the row:
 ```sql
 UPDATE dbo.webhook_inbox
 SET    status = @final_status,            -- 2, 3, 4, 5, 6 or 7
+       signature_status = @signature_status, -- 1 valid / 2 invalid once verified; the endpoint's duplicate check reads it
        locked_until = NULL,
        processed_at = CASE WHEN @final_status = 2 THEN @now END,
        next_attempt_at = @next_attempt_at, -- only meaningful for 3 (Failed)
@@ -170,19 +171,25 @@ catches anything the queue loses.
 ## Processing one row
 
 1. **Verify the signature** from raw `headers` + raw `body` — nothing in the body is trusted before this.
+   Record `signature_status` (1 valid / 2 invalid — the receiving endpoint's duplicate handling reads it).
    Missing headers, body that isn't a JSON object, or a bad signature → `Rejected`.
    - *One app for everyone:* use the environment's `webhook_id`.
    - *One app per tenant:* resolve the tenant **only** from `request_path` (URL key) to pick its
      `webhook_id`; unknown key → `Rejected`.
 2. **Parse** the verified body. Event types you don't handle → `Ignored`.
 3. **Resolve the order** through your mapping table (below). Not found → `Unmatched`.
-4. **Act on current PayPal state** (with that tenant's/environment's credentials):
-   - `CHECKOUT.ORDER.APPROVED` → `GET` the order. `APPROVED` → capture it with
+4. **Act on current PayPal state** (with that tenant's/environment's credentials). Route on the
+   envelope's **`resource_type`**, not on an event-name prefix — `PAYMENT.CAPTURE.REFUNDED` carries a
+   *refund* (see [webhooks.md](webhooks.md#2-pick-event-types-orders-v2-checkout)), and its id sent to
+   the captures endpoint 404s into `DeadLetter`:
+   - `CHECKOUT.ORDER.*` events (order resource; match on the event type — the order `resource_type`
+     string isn't in an official sample) → `GET` the order. `APPROVED` → capture it with
      `PayPal-Request-Id: capture:{orderId}` (the same key the website's capture endpoint uses).
      `ORDER_ALREADY_CAPTURED`, or the order is already `COMPLETED` → take the capture from the order.
      A "request with this id is still in progress"-type error → transient (`Failed`, retry).
-   - `PAYMENT.CAPTURE.*` → `GET /v2/payments/captures/{id}`.
-   - Refund events → `GET /v2/payments/refunds/{id}` (see [webhooks.md](webhooks.md) on refund resource shape).
+   - `resource_type: capture` → `GET /v2/payments/captures/{id}`.
+   - `resource_type: refund` → `GET /v2/payments/refunds/{id}`, then its capture (`links[]`, `rel: up`).
+   - Any other `resource_type` on an event you subscribed to → `DeadLetter` + alert; never guess an endpoint.
 5. **Book** through the shared booking routine (below) — the same one the synchronous capture path uses.
 6. **Complete** with the fenced update: `Processed`, or `Failed` + backoff on a transient error.
 
@@ -236,26 +243,40 @@ The upsert in the order-creation endpoint must be idempotent too: a retried crea
 capture id (`PENDING` → `COMPLETED` → `PARTIALLY_REFUNDED` → `REFUNDED`). A second event for a known
 capture is usually a real state change, not a duplicate.
 
-| Rank | Capture status | Business effect when the row first *enters* this rank |
+| Rank | Capture status | Business effect when the row *moves* to this rank |
 |---|---|---|
 | 1 | `PENDING` | Show "payment pending"; nothing paid yet |
 | 2 | `COMPLETED` | **Mark the checkout paid** (exactly once) |
-| 3 | `PARTIALLY_REFUNDED` | Record refund(s) |
-| 4 | `REFUNDED` | Record refund(s); reverse the paid state if your domain needs it |
+| 3 | `PARTIALLY_REFUNDED` | Record refund(s) — and mark paid first if the row came from below 2 |
+| 4 | `REFUNDED` | Record refund(s); reverse the paid state if your domain needs it — mark paid first if the row came from below 2 |
 | 9 | `DECLINED` / `FAILED` | Payment failed — only valid from no row or rank 1 |
+
+A capture can be **first seen at rank 3 or 4** — the webhook was late or lost and the merchant already
+refunded part of it in the dashboard. "Paid" is therefore tied to *crossing* rank 2, not to entering it.
 
 Rules:
 
-1. **Check the money before rank 2:** captured `amount.value` + `currency_code` must equal
-   `paypal_order.expected_amount` + `currency`, and the order's payee (`purchase_units[].payee.merchant_id`)
-   must be your merchant account. Mismatch → don't book; `Unmatched` + alert (someone paid a different
-   amount, or the order isn't yours).
-2. **Upsert forward-only**, in one transaction with the business effect:
-   `UPDATE … SET status = @s, status_rank = @r … WHERE capture_id = @id AND status_rank < @r
-   AND (@r <> 9 OR status_rank <= 1)` — the last condition keeps a late `DECLINED`/`FAILED` from
-   overwriting a paid or refunded capture (insert if the row doesn't exist; a unique-key race on
-   insert → re-run the update). 0 rows updated = same or
-   older state = no-op. The business effect runs only in the transaction that moved the rank.
+1. **Check the money for every rank 2–4:** the capture's `amount.value` + `currency_code` ("the amount
+   for this captured payment") must equal `paypal_order.expected_amount` + `currency`, and the
+   capture's payee must be your merchant account — `payee.merchant_id` of the re-fetched capture
+   (`GET /v2/payments/captures/{id}`); on the synchronous path, the captured order's
+   `purchase_units[].payee.merchant_id`. Mismatch → don't book; `Unmatched` + alert (someone paid a
+   different amount, or the order isn't yours).
+2. **Upsert forward-only**, in one transaction with the business effect; `OUTPUT` returns the rank the
+   row had before:
+
+   ```sql
+   UPDATE dbo.paypal_capture
+   SET    status = @status, status_rank = @rank, updated_at = @now
+   OUTPUT deleted.status_rank AS previous_rank
+   WHERE  capture_id = @capture_id AND status_rank < @rank
+     AND  (@rank <> 9 OR status_rank <= 1);   -- a late DECLINED/FAILED never overwrites a paid/refunded capture
+   ```
+
+   No row returned: the row doesn't exist → insert it (previous rank = 0; a unique-key race on insert →
+   re-run the update), or it is already at the same or a newer state → no-op. **Mark paid when
+   `previous_rank < 2` and the new rank is 2–4.** Business effects run only in the transaction that
+   moved the rank.
 3. **Refunds** upsert into `paypal_refund` keyed on `refund_id`; derive `PARTIALLY_REFUNDED`/`REFUNDED`
    from the re-fetched capture.
 4. **Reversals** (`PAYMENT.CAPTURE.REVERSED`, chargebacks) set `reversed = 1` on the capture and alert —
@@ -272,8 +293,8 @@ The **only** proof that an event belongs to you is your own mapping: the PayPal 
   `custom_id` and amount (e.g. client-side order creation in JS SDK v5).
 - **The URL key** (`request_path`) selects the tenant's `webhook_id` in per-tenant-app setups; the order
   mapping still has to match.
-- **Refunds** made in the PayPal dashboard arrive as webhooks too; go from the refund to its capture
-  (`links` with `rel: up`) to your mapping.
+- **Refunds** made in the PayPal dashboard arrive as webhooks too (`resource_type: refund`); go from the
+  refund to its capture (`links` with `rel: up`) to your mapping.
 
 ## Operations
 

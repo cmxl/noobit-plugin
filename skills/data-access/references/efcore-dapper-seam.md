@@ -18,13 +18,14 @@ Verified against official documentation, July 2026 (learn.microsoft.com EF Core 
 
 `Database.GetDbConnection()` returns the ADO.NET `DbConnection` EF uses; `IDbContextTransaction.GetDbTransaction()` returns the underlying `DbTransaction` — both are the documented interop surface (EF "Transactions" page, cross-context and external-`DbTransaction` sections). Ownership rule from the API docs: **do not dispose the connection if EF created it** (i.e. you passed a connection string to `UseSqlServer`/`UseNpgsql`); if you passed a `DbConnection` in, disposing it is your job. Inside `BeginTransactionAsync` the connection is open for the transaction's lifetime; outside a transaction, bracket Dapper calls with `Database.OpenConnectionAsync(ct)` / `CloseConnectionAsync()` so EF's open/close bookkeeping stays consistent.
 
-With `EnableRetryOnFailure`, `BeginTransactionAsync` outside the strategy throws `InvalidOperationException: The configured execution strategy '...RetryingExecutionStrategy' does not support user-initiated transactions. Use the execution strategy returned by 'DbContext.Database.CreateExecutionStrategy()' ...` — the delegate is the retriable unit and must be re-runnable from the top (no captured dirty state):
+With `EnableRetryOnFailure`, `BeginTransactionAsync` outside the strategy throws `InvalidOperationException: The configured execution strategy '...RetryingExecutionStrategy' does not support user-initiated transactions. Use the execution strategy returned by 'DbContext.Database.CreateExecutionStrategy()' ...` — the delegate is the retriable unit and must be re-runnable from the top (no captured dirty state). Two consequences: `Add` the entity *before* the strategy, and save with `acceptAllChangesOnSuccess: false` + `AcceptAllChanges()` after the strategy returns — a plain `SaveChangesAsync` marks entities `Unchanged` on success, so if the commit then fails transiently the replay saves nothing (or, if you re-`Add` inside the delegate, inserts twice):
 
 ```csharp
 public sealed class OrderService(AppDbContext db)
 {
     public async Task PlaceAsync(Order order, CancellationToken ct)
     {
+        db.Orders.Add(order);                                     // once, outside the retriable unit
         var strategy = db.Database.CreateExecutionStrategy();
         // Overload: ExecuteAsync<TState>(TState, Func<TState, CancellationToken, Task>, CancellationToken)
         // — pass ct as the LAST argument so the strategy itself observes cancellation between retries.
@@ -33,8 +34,7 @@ public sealed class OrderService(AppDbContext db)
             var (db, order) = state;
             await using var tx = await db.Database.BeginTransactionAsync(token);
 
-            db.Orders.Add(order);
-            await db.SaveChangesAsync(token);
+            await db.SaveChangesAsync(acceptAllChangesOnSuccess: false, token);   // state stays replayable
 
             var conn = db.Database.GetDbConnection();            // EF's connection — do not dispose
             await conn.ExecuteAsync(new CommandDefinition(
@@ -45,8 +45,22 @@ public sealed class OrderService(AppDbContext db)
 
             await tx.CommitAsync(token);
         }, ct);
+
+        db.ChangeTracker.AcceptAllChanges();                      // only after a successful commit
     }
 }
+```
+
+**Commit outcome unknown.** If the connection drops *during* `Commit`, the transaction may or may not have committed; the strategy retries as if it rolled back. The resiliency docs' options: (1) accept the rare failure but use **client-generated keys** (`Guid.CreateVersion7()`) so the replay throws a key violation instead of inserting a duplicate row; (2) state verification via `ExecuteInTransactionAsync` — EF begins/commits the transaction and calls `verifySucceeded` only when the commit fails transiently:
+
+```csharp
+db.Orders.Add(order);
+await strategy.ExecuteInTransactionAsync(
+    db,
+    operation: (ctx, token) => ctx.SaveChangesAsync(acceptAllChangesOnSuccess: false, token),
+    verifySucceeded: (ctx, token) => ctx.Orders.AsNoTracking().AnyAsync(o => o.Id == order.Id, token),
+    ct);
+db.ChangeTracker.AcceptAllChanges();
 ```
 
 `ExecuteAsync<TState>(TState, Func<TState, Task>)` also exists, so passing the token *as the state* compiles and delivers it to your delegate — but then the strategy has no token of its own (retry delays are uncancellable). Prefer the overload above.
@@ -55,27 +69,51 @@ public sealed class OrderService(AppDbContext db)
 
 1. **EF owns** — `Database.BeginTransactionAsync` + `GetDbConnection()`/`GetDbTransaction()` (pattern 1). Default; keeps savepoint-on-`SaveChanges` behavior (note: savepoints are disabled under SQL Server MARS).
 2. **Your code owns** — open a `DbConnection` yourself, `BeginTransactionAsync` on it, run Dapper, then enlist EF: build options with `UseSqlServer(connection)`/`UseNpgsql(connection)` and call `Database.UseTransactionAsync(dbTransaction)`. This is the docs' "Using external DbTransactions" pattern; use it when Dapper is the primary actor or several contexts share one transaction.
-3. **Ambient `TransactionScope`** — documented but last resort. Officially listed limitations: provider support varies (SqlClient yes; test yours), distributed transactions require .NET 7+ **and Windows only**, and `TransactionScope` has **no async commit/rollback** — disposal blocks the thread. If used with async code you must pass `TransactionScopeAsyncFlowOption.Enabled` or the ambient transaction will not flow across `await`. Under retries, wrap the whole scope in `CreateExecutionStrategy().ExecuteAsync(...)` (docs show this combination explicitly).
+3. **Ambient `TransactionScope`** — documented but last resort. On SQL Server with EF 10, EF injects an `Application Name` into connection strings that lack one, so EF and Dapper opened from the "same" string are two distinct connection strings to SqlClient — inside a `TransactionScope` that **escalates to a distributed transaction** (EF10 breaking change). Set `Application Name=` explicitly. Officially listed limitations: provider support varies (SqlClient yes; test yours), distributed transactions require .NET 7+ **and Windows only**, and `TransactionScope` has **no async commit/rollback** — disposal blocks the thread. If used with async code you must pass `TransactionScopeAsyncFlowOption.Enabled` or the ambient transaction will not flow across `await`. Under retries, wrap the whole scope in `CreateExecutionStrategy().ExecuteAsync(...)` (docs show this combination explicitly).
 4. **Cross-service** — never a distributed transaction; outbox + broker.
 
 ### 3. Connection pool mechanics at the seam
 
 Sharing EF's connection for in-transaction Dapper work isn't just about atomicity — a second connection per request doubles pool pressure and can deadlock the pool under load (request holds slot A while queueing for slot B).
 
-- **SqlClient**: one pool per *exact* connection string text (keyword order matters), further split by Windows identity and by transaction enlistment. `Max Pool Size` default **100**, `Min Pool Size` 0; on exhaustion the open call queues up to `Connect Timeout` (default **15 s**) then throws. After a login failure the pool blocks new attempts for 5 s, doubling up to 1 min (`PoolBlockingPeriod`). Pool *fragmentation*: per-user integrated security and per-database connection strings each mint a new pool — connect to one database and `USE`/schema-switch instead. `SqlConnection.ClearPool(conn)` / `ClearAllPools()` discard connections (e.g. after failover; fatal errors already auto-clear).
+- **SqlClient**: one pool per *exact* connection string text (keyword order matters — and EF 10 appends an `Application Name` when yours has none, giving EF and Dapper separate pools; set it explicitly), further split by Windows identity and by transaction enlistment. `Max Pool Size` default **100**, `Min Pool Size` 0; on exhaustion the open call queues up to `Connect Timeout` (default **15 s**) then throws. After a login failure the pool blocks new attempts for 5 s, doubling up to 1 min (`PoolBlockingPeriod`). Pool *fragmentation*: per-user integrated security and per-database connection strings each mint a new pool — connect to one database and `USE`/schema-switch instead. `SqlConnection.ClearPool(conn)` / `ClearAllPools()` discard connections (e.g. after failover; fatal errors already auto-clear).
 - **Npgsql**: the pool lives behind the `NpgsqlDataSource` / connection string. Defaults: `Pooling=true`, `Maximum Pool Size` **100**, `Minimum Pool Size` 0, `Connection Idle Lifetime` 300 s, pruned every 10 s. One **singleton** `NpgsqlDataSource` = one pool; `NpgsqlConnection.ClearPool` / `ClearAllPools` exist.
 - **SQLite (Microsoft.Data.Sqlite)**: pooled by default since 6.0 (`Pooling=False` to opt out; `SqliteConnection.ClearPool`). The real constraint is the single writer — keep write batches in one transaction.
 
 **Postgres wiring** — one data source feeds both sides (`UseNpgsql(NpgsqlDataSource)` is a documented overload; the Npgsql EF docs direct you to create and pass an external data source whenever configuration varies or the source is shared). Dapper's snake_case mapping: `DefaultTypeMap.MatchNamesWithUnderscores` is a real static property on `Dapper.DefaultTypeMap` ("Should column names like User_Id be allowed to match properties/fields like UserId?").
 
 ```csharp
-var dsBuilder = new NpgsqlDataSourceBuilder(cs);   // enums, JSON, interceptors — configured once
-builder.Services.AddSingleton(dsBuilder.Build());
+builder.Services.AddNpgsqlDataSource(cs, ds => ds.EnableDynamicJson());   // Npgsql.DependencyInjection: singleton data source
 builder.Services.AddDbContextPool<AppDbContext>((sp, o) => o
     .UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>(), npgsql => npgsql.EnableRetryOnFailure())
-    .UseSnakeCaseNamingConvention());
+    .UseSnakeCaseNamingConvention());              // EFCore.NamingConventions package
 DefaultTypeMap.MatchNamesWithUnderscores = true;   // once at startup
 ```
+
+Npgsql enums are the one double-registration: with an external data source, map them on the data-source builder *and* via `MapEnum` in `UseNpgsql` (Npgsql EF docs).
+
+### 3b. Transient faults on Dapper's own connections
+
+`EnableRetryOnFailure` only retries what EF executes. Dapper on EF's connection is covered by running it inside `CreateExecutionStrategy().ExecuteAsync` (pattern 1). Standalone Dapper needs its own policy — a Polly v8 `ResiliencePipeline` (the stack default) wrapping the **whole unit** (open → commands → commit), never a single statement mid-transaction; non-idempotent writes need the same client-key discipline as above.
+
+```csharp
+private static readonly ResiliencePipeline Retry = new ResiliencePipelineBuilder()
+    .AddRetry(new RetryStrategyOptions
+    {
+        ShouldHandle = new PredicateBuilder().Handle<NpgsqlException>(ex => ex.IsTransient),
+        MaxRetryAttempts = 3, BackoffType = DelayBackoffType.Exponential, UseJitter = true,
+    })
+    .Build();
+
+public ValueTask<int> CountAsync(CancellationToken ct) =>
+    Retry.ExecuteAsync(async token =>
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(token);
+        return await conn.ExecuteScalarAsync<int>(new CommandDefinition("SELECT count(*) FROM orders", cancellationToken: token));
+    }, ct);
+```
+
+SqlClient caveat: `SqlException` does **not** override `DbException.IsTransient` (always `false`) — filter on `SqlException.Number` against the documented transient error list, or use SqlClient's built-in configurable retry logic (`SqlConnection.RetryLogicProvider = SqlConfigurableRetryFactory.CreateExponentialRetryProvider(...)`).
 
 ### 4. Streaming without buffering
 
@@ -98,9 +136,10 @@ public async IAsyncEnumerable<OrderRowDto> ExportAsync([EnumeratorCancellation] 
 
 The database can't seek an index when the parameter type outranks the column type; it converts the *column side* → scan. EF gets types from the model; raw Dapper parameters are inferred from the CLR type, so Dapper is where this bites.
 
-- **MSSQL, strings**: .NET strings become `nvarchar` parameters. Against a `varchar` column that's an implicit widening conversion → scan. Dapper README: for varchar predicates pass `new DbString { Value = v, IsAnsi = true }` (plus `IsFixedLength`/`Length` for `char(n)`); "On SQL Server it is crucial to use the unicode when querying unicode and ANSI when querying non unicode."
+- **MSSQL, strings (EF side)**: map `varchar` columns as non-Unicode — `IsUnicode(false)` / `[Unicode(false)]` or `HasColumnType("varchar(n)")` — so EF sends `varchar` parameters for them too; an unmapped `string` property is `nvarchar` and the same scan trap applies to EF queries.
+- **MSSQL, strings (Dapper side)**: .NET strings become `nvarchar` parameters. Against a `varchar` column that's an implicit widening conversion → scan. Dapper README: for varchar predicates pass `new DbString { Value = v, IsAnsi = true }` (plus `IsFixedLength`/`Length` for `char(n)`); "On SQL Server it is crucial to use the unicode when querying unicode and ANSI when querying non unicode."
 - **MSSQL, DateTime**: `DateTime` infers legacy `datetime`; against `datetime2` columns set `DbType.DateTime2` explicitly to avoid conversion and precision loss.
-- **Decimal**: inferred precision/scale can truncate or mismatch — declare `HasPrecision(18, 2)` in the EF model and pass explicit precision/scale (`DbType.Decimal` + sized `DbString`-style typing or a typed `DbParameter`) in hand-written commands.
+- **Decimal**: inferred precision/scale can truncate or mismatch — declare `HasPrecision(18, 2)` in the EF model and pass explicit precision/scale in hand-written commands: `new DynamicParameters()` + `p.Add("total", v, DbType.Decimal, precision: 18, scale: 2)` (`DbString` is for strings only).
 - **PostgreSQL**: `timestamptz` requires `DateTime.Kind == Utc`; unspecified/local kinds map to `timestamp` and Npgsql throws on mismatch (fail-fast, unlike MSSQL's silent scan). `text`/`varchar` are the same type family — no ANSI trap.
 
 ### 6. Bulk ingestion — the documented fast paths
@@ -121,11 +160,12 @@ public async Task BulkLoadAsync(IReadOnlyList<MeasurementDto> rows, Cancellation
     };
     bulk.ColumnMappings.Add(nameof(MeasurementDto.SensorId), "SensorId");   // always map explicitly
     bulk.ColumnMappings.Add(nameof(MeasurementDto.Value), "Value");
-    await bulk.WriteToServerAsync(ToDataReader(rows), ct);                  // IDataReader source streams
+    using var reader = ObjectReader.Create(rows, nameof(MeasurementDto.SensorId), nameof(MeasurementDto.Value));
+    await bulk.WriteToServerAsync(reader, ct);                              // IDataReader source streams
 }
 ```
 
-`TableLock` enables minimally-logged loads into empty/heap targets; drop it for concurrent-write tables.
+`ObjectReader` is from the FastMember package (an `IDataReader` over any `IEnumerable<T>`); a `DataTable` works too but materializes everything. `TableLock` is a prerequisite for minimal logging, not a guarantee: the database must also be in the **SIMPLE or BULK_LOGGED** recovery model (FULL logs every row), the table must not be replicated, and indexed targets must be empty (or a heap). Drop it for concurrent-write tables.
 
 **PostgreSQL — binary COPY** (npgsql.org: the efficient binary format; all-async API verified: `BeginBinaryImportAsync`, `StartRowAsync`, `WriteAsync<T>(value, NpgsqlDbType, ct)`, `WriteNullAsync`, `CompleteAsync` → `ValueTask<ulong>`). Disposing without `Complete` rolls the import back — that is the documented cancellation/failure path. Always pass `NpgsqlDbType`; wrong types mean exceptions or "silent data corruption" (docs' words):
 
@@ -168,7 +208,7 @@ tx.Commit();
 The schema is EF's; Dapper strings can't be compile-checked. Enforce with process + tests:
 
 - Dapper SQL lives only in `*Queries` classes — grep surface per migration (`rg -l 'old_column' src/**/ *Queries*`).
-- Integration tests on a real database (Testcontainers): apply **all migrations** to a fresh container, then execute every `*Queries` method — a renamed/retyped column fails the run. Cheap variant: one parameterized test that walks all query classes and asserts each executes (LIMIT 0 / TOP 0 where needed).
+- Integration tests on a real database (Testcontainers) — never the EF InMemory provider (officially "highly discouraged") or SQLite-in-memory standing in for MSSQL/Postgres: neither runs the Dapper SQL dialect or the provider's translations: apply **all migrations** to a fresh container, then execute every `*Queries` method — a renamed/retyped column fails the run. Cheap variant: one parameterized test that walks all query classes and asserts each executes (LIMIT 0 / TOP 0 where needed).
 - Never assert on EF-generated SQL text; assert on data equivalence (row count, columns, cell values) per the provider skills.
 
 ## Anti-patterns
@@ -183,11 +223,18 @@ The schema is EF's; Dapper strings can't be compile-checked. Enforce with proces
 - `ExecuteUpdate`/`ExecuteDelete` sequences without an explicit transaction when they must be atomic — each runs in its own implicit transaction.
 - Bulk loads via row-by-row `INSERT` or per-row `SaveChanges` — use `SqlBulkCopy` / binary COPY / SQLite single-transaction pattern.
 - Many near-identical connection strings (per user, per database) — pool fragmentation; one canonical string per role.
+- MSSQL connection string without an explicit `Application Name` under EF 10 — EF's rewritten copy and Dapper's original are two pools (distributed-transaction escalation inside `TransactionScope`).
+- Plain `SaveChangesAsync(token)` inside an execution-strategy delegate followed by a commit — a commit-time retry finds nothing to save; use `acceptAllChangesOnSuccess: false` + `AcceptAllChanges()`.
+- Standalone Dapper with no retry policy on cloud databases — `EnableRetryOnFailure` does not cover it.
 
 ## Sources
 
 - https://learn.microsoft.com/en-us/ef/core/saving/transactions
 - https://learn.microsoft.com/en-us/ef/core/miscellaneous/connection-resiliency
+- https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-10.0/breaking-changes (Application Name injection)
+- https://learn.microsoft.com/en-us/ef/core/testing/choosing-a-testing-strategy
+- https://learn.microsoft.com/en-us/sql/relational-databases/import-export/prerequisites-for-minimal-logging-in-bulk-import
+- https://github.com/mgravell/fast-member (ObjectReader)
 - https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.executionstrategyextensions
 - https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.relationaldatabasefacadeextensions.getdbconnection
 - https://learn.microsoft.com/en-us/ef/core/performance/efficient-updating

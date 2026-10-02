@@ -4,7 +4,7 @@ Verified against official documentation, July 2026. Sources: PostgreSQL 18 manua
 
 ## Current versions (July 2026)
 
-- **PostgreSQL 18 is current** (18.4; released 2025-09-25, EOL 2030-11-14). Supported majors: 14 (EOL **2026-11-12** — plan upgrades now), 15, 16, 17, 18. **PostgreSQL 19 Beta 1** released 2026-06-04 — not for production.
+- **PostgreSQL 18 is the current major** (released 2025-09-25, EOL 2030-11-14) — check https://www.postgresql.org/support/versioning/ for the current minor and always run it. Supported majors: 14 (EOL **2026-11-12** — plan upgrades now), 15, 16, 17, 18. **PostgreSQL 19** is in beta — not for production.
 - PG 18 performance-relevant changes (release notes):
   - **Asynchronous I/O subsystem**: `io_method` (default `worker`; `io_uring` on Linux builds with liburing; `sync` for old behavior), `io_workers` (default 3). Covers sequential scans, bitmap heap scans, and vacuum; up to ~3x faster reads from storage. `effective_io_concurrency` default is now 16.
   - **B-tree skip scan**: multicolumn B-tree usable when `=` on a prefix column is omitted (helps, but proper column order still wins).
@@ -81,8 +81,15 @@ ANALYZE addresses;
 - On failure it leaves an **`INVALID` index**: ignored by queries but still paid on every write. Fix: `DROP INDEX` and retry, or `REINDEX INDEX CONCURRENTLY`.
 
 ```sql
-CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_customer ON orders (customer_id);
+-- No IF NOT EXISTS: on a re-run it skips with a NOTICE over the INVALID leftover (docs: "no guarantee
+-- that the existing index is anything like the one that would have been created")
+CREATE INDEX CONCURRENTLY ix_orders_customer ON orders (customer_id);
+
 SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;  -- find leftover invalid indexes
+-- idempotent retry (psql): drop the leftover only if it is invalid, then re-run the CREATE above
+SELECT format('DROP INDEX CONCURRENTLY %s', indexrelid::regclass)
+FROM pg_index WHERE indexrelid = to_regclass('ix_orders_customer') AND NOT indisvalid \gexec
+
 REINDEX INDEX CONCURRENTLY ix_orders_customer;                   -- also the bloat-repair tool for live indexes
 ```
 - Unique builds enforce uniqueness against other transactions from the second scan onward — other sessions can see violation errors before the index exists; a failed invalid unique index **keeps enforcing** the constraint.
@@ -104,19 +111,19 @@ ALTER TABLE events SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_analyz
 SELECT relname, n_dead_tup, n_live_tup, last_autovacuum, last_autoanalyze
 FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 20;        -- bloat pressure
 SELECT c.oid::regclass, age(c.relfrozenxid)
-FROM pg_class c WHERE c.relkind IN ('r','m')
+FROM pg_class c WHERE c.relkind IN ('r','m','t')                  -- 't' = TOAST tables age too
 ORDER BY 2 DESC LIMIT 20;                                          -- wraparound headroom
 ```
 
 - Plain `VACUUM` reclaims space for **reuse**, it does not shrink files (except trailing pages); `VACUUM FULL` rewrites the table under an exclusive lock — emergency tool, not maintenance. Frequent cheap vacuums beat rare heavy ones. Never disable autovacuum: XID wraparound protection depends on it (`track_counts = on` is required for it to work at all); `log_autovacuum_min_duration` and `pg_stat_progress_vacuum` show what it is doing.
 
-### Memory and planner cost settings (as documented)
+### Memory and planner cost settings
 
 - `shared_buffers` (default 128MB): docs recommend **~25% of RAM** on a dedicated server with ≥1GB; **>40% is unlikely to help** because PostgreSQL also uses the OS cache. Raising it "usually require[s] a corresponding increase in `max_wal_size`".
 - `work_mem` (default 4MB): limit **per sort/hash operation**, not per query or connection — one query can run several concurrently, times many sessions. Set a modest global value and raise per session/transaction (`SET LOCAL work_mem = '256MB'`) for known heavy queries. Hash operations get `work_mem × hash_mem_multiplier` (default 2.0; docs suggest 2.0–8.0 where spilling persists after `work_mem` ≥ 40MB).
 - `maintenance_work_mem` (default 64MB): VACUUM, `CREATE INDEX`, FK adds — safe to set much higher than `work_mem`, but autovacuum may allocate it × `autovacuum_max_workers` (cap workers via `autovacuum_work_mem`).
-- `effective_cache_size` (default 4GB): planner-only estimate of total cache (shared_buffers + OS cache); allocates nothing. Set to ~50–75% of RAM so index scans price correctly.
-- `random_page_cost` (default 4.0): docs say lower it when data is likely fully cached or on storage with cheap random reads (SSD/NVMe — commonly 1.1); keep higher for magnetic disks.
+- `effective_cache_size` (default 4GB): planner-only estimate of total cache (shared_buffers + OS cache); allocates nothing. Docs: account for shared_buffers plus the OS cache share PostgreSQL gets, and concurrent queries sharing it; ~50–75% of RAM on a dedicated server is **community guidance**, not a documented value.
+- `random_page_cost` (default 4.0): docs say lower it when data is likely fully cached (equal to `seq_page_cost` if entirely in RAM), raise it for magnetic disks. `1.1` for SSD/NVMe is **community guidance**, not in the docs — compare plans after setting it.
 
 ### JIT and parallel query
 
@@ -143,7 +150,7 @@ Per the SELECT reference: `EXCEPT ALL` returns a row with *m* duplicates on the 
 
 ### Bulk loading (populate docs)
 
-`COPY` over `INSERT` ("almost always faster... even if PREPARE is used and multiple insertions are batched"); load into a fresh table **then** create indexes; drop/re-add FK constraints for very large loads (trigger queue can exhaust memory); raise `maintenance_work_mem` and `max_wal_size` for the load; single transaction, and `wal_level = minimal` if archiving can be off; **`ANALYZE` immediately afterwards** — autovacuum hasn't seen the data yet. From .NET use Npgsql binary COPY: `connection.BeginBinaryImport("COPY t (a, b) FROM STDIN (FORMAT BINARY)")`.
+`COPY` over `INSERT` ("almost always faster... even if PREPARE is used and multiple insertions are batched"); load into a fresh table **then** create indexes; drop/re-add FK constraints for very large loads (trigger queue can exhaust memory); raise `maintenance_work_mem` and `max_wal_size` for the load; single transaction, and `wal_level = minimal` if archiving can be off; **`ANALYZE` immediately afterwards** — autovacuum hasn't seen the data yet. From .NET use Npgsql binary COPY: `connection.BeginBinaryImport("COPY t (a, b) FROM STDIN (FORMAT BINARY)")` — the import must end with `Complete()`/`CompleteAsync()`, otherwise dispose rolls it back; full async snippet in `data-access/references/efcore-dapper-seam.md`.
 
 ### pg_stat_statements (find the top offenders)
 
@@ -156,22 +163,49 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 ```
 
 - Defaults: `pg_stat_statements.max` = 5000, `.track` = `top` (`all` includes nested statements), `.track_utility` = on, `.track_planning` = off (has overhead), `.save` = on.
-- Queries are normalized (constants → `$1`) and keyed by `queryid` — **not stable across major versions**, so persist query text, not ids. Triage query:
-
-```sql
-SELECT queryid, calls, round(mean_exec_time)::text AS mean_ms,
-       round(total_exec_time)::text AS total_ms, rows,
-       shared_blks_read, temp_blks_written
-FROM pg_stat_statements
-ORDER BY total_exec_time DESC LIMIT 20;
-```
+- Queries are normalized (constants → `$1`) and keyed by `queryid` — **not stable across major versions**, so persist query text, not ids. Triage query: "Ready-to-run diagnostics" below.
 
 - `temp_blks_written` > 0 ⇒ spilling (`work_mem`); high `shared_blks_read` vs `hit` ⇒ working set exceeds cache; pair with `auto_explain` to capture the actual slow plans.
+
+### Locks, timeouts and safe production DDL
+
+- **Lock queue**: most `ALTER TABLE` forms (and `DROP`, `TRUNCATE`, plain `REINDEX`, `VACUUM FULL`) take `ACCESS EXCLUSIVE` — the only mode that blocks a plain `SELECT`. A DDL waiting behind one long transaction makes every later query on the table wait **behind the DDL** (observed on PG 18: `SELECT` blocked by the waiting `ALTER`, which is blocked by the open transaction). Lock waits are indefinite by default.
+- **Timeouts** (all default `0` = off; docs advise against setting them globally in `postgresql.conf` — set per role, session or migration):
+  - `lock_timeout` — aborts a statement waiting for a lock; applies to **each** lock acquisition separately. Set it in migrations (`SET lock_timeout = '5s'`) and retry on failure; keep it below `statement_timeout` or it never fires.
+  - `statement_timeout` — caps a statement's run time (per role: `ALTER ROLE app SET statement_timeout = '30s'`).
+  - `idle_in_transaction_session_timeout` — terminates sessions idling inside an open transaction; those hold locks and keep vacuum from cleaning up.
+  - `transaction_timeout` (PG 17+) — caps a whole transaction.
+- **Online-friendly DDL**:
+  - `ADD COLUMN` with a non-volatile `DEFAULT` is metadata-only (no rewrite); a volatile default (`clock_timestamp()`), a generated/identity column or a type change rewrites the table.
+  - Constraints on big tables in two steps — `NOT VALID` (FK, CHECK; NOT NULL since PG 18) skips the full scan while new writes are checked immediately; `VALIDATE CONSTRAINT` scans later under `SHARE UPDATE EXCLUSIVE` (reads and writes continue):
+
+```sql
+SET lock_timeout = '5s';
+ALTER TABLE orders ADD CONSTRAINT fk_orders_customer
+  FOREIGN KEY (customer_id) REFERENCES customers (id) NOT VALID;  -- short lock, no scan
+ALTER TABLE orders VALIDATE CONSTRAINT fk_orders_customer;        -- scan without blocking writes
+```
+
+- **Queue/outbox polling**: `FOR UPDATE SKIP LOCKED` lets several workers claim different rows without blocking each other. Docs: it gives an inconsistent view of the data — queue-like tables only, never general reads. Mark rows processed only **after** the publish is confirmed, in the same transaction that holds the row locks — marking first and publishing after the commit loses events on a crash:
+
+```sql
+BEGIN;
+SELECT id, type, payload FROM outbox_messages
+WHERE processed_at IS NULL
+ORDER BY id LIMIT 100
+FOR UPDATE SKIP LOCKED;                 -- rows stay locked; other workers skip them
+-- … publish each message, wait for broker confirms …
+UPDATE outbox_messages SET processed_at = now() WHERE id = ANY(@ids);
+COMMIT;                                 -- crash before this → rows unlock and are published again (consumers dedupe)
+```
+
+  Several workers keep insert order only within a claimed batch; strict global ordering needs a single
+  dispatcher (or one per partition key).
 
 ### Npgsql specifics (.NET)
 
 - Pooling is on by default; returned connections are reset via `DISCARD ALL`. Prefer a singleton `NpgsqlDataSource` (see `data-access`).
-- **Prepared statements are the top documented driver win.** Automatic preparation is **off by default**: `Max Auto Prepare=0`; enable with e.g. `Max Auto Prepare=100;Auto Prepare Min Usages=5` (defaults shown) — this benefits Dapper/EF too since they don't call `Prepare()`. Explicit `Prepare()` is still faster when coding ADO.NET directly. Prepared statements persist across pooled opens. Transaction-mode PgBouncer breaks session-scoped prepared statements — align pooler mode before enabling.
+- **Prepared statements are the top documented driver win.** Automatic preparation is **off by default**: `Max Auto Prepare=0`; enable with e.g. `Max Auto Prepare=100;Auto Prepare Min Usages=5` (defaults: `0` / `5`) — this benefits Dapper/EF too since they don't call `Prepare()`. Explicit `Prepare()` is still faster when coding ADO.NET directly. Prepared statements persist across pooled opens. Behind transaction-mode PgBouncer, prepared statements need **PgBouncer ≥ 1.21** with `max_prepared_statements` > 0 (default 200 since 1.24; protocol-level only — SQL `PREPARE`/`EXECUTE` still break); older PgBouncer or `max_prepared_statements = 0` → keep auto-prepare off.
 - Batching: `NpgsqlBatch` sends multiple statements in one round trip. Large rows: `CommandBehavior.SequentialAccess` streams instead of buffering (read columns in order); or raise `Read Buffer Size`.
 - Always use parameters — interpolated SQL defeats auto-preparation (every literal is a new statement) besides the injection risk. `Enlist=false` if you never use TransactionScope and cycle connections heavily.
 
@@ -182,21 +216,38 @@ Top offenders from `pg_stat_statements`:
 ```sql
 SELECT substring(query, 1, 100) AS query, calls,
        round(total_exec_time::numeric, 2) AS total_ms,
-       round(mean_exec_time::numeric, 2) AS avg_ms, rows
+       round(mean_exec_time::numeric, 2) AS avg_ms, rows,
+       shared_blks_read, temp_blks_written
 FROM pg_stat_statements
 ORDER BY total_exec_time DESC
 LIMIT 20;
 ```
 
-Unused indexes (write tax with zero read benefit — verify over a representative workload window before dropping):
+Unused indexes (write tax with zero read benefit). Unique, primary-key and exclusion-constraint indexes are excluded — they enforce integrity even at `idx_scan = 0`, and dropping one drops the constraint. Statistics are **per instance**: check every read replica too (an index may serve only standby reads), and make sure the window since `pg_stat_database.stats_reset` covers a representative workload:
 
 ```sql
-SELECT schemaname || '.' || relname AS "table", indexrelname AS index,
-       idx_scan AS times_used,
-       pg_size_pretty(pg_relation_size(indexrelid)) AS size
-FROM pg_stat_user_indexes
-WHERE idx_scan = 0 AND indexrelname NOT LIKE '%_pkey'
-ORDER BY pg_relation_size(indexrelid) DESC;
+SELECT s.schemaname || '.' || s.relname AS "table", s.indexrelname AS index,
+       s.idx_scan, s.last_idx_scan,
+       pg_size_pretty(pg_relation_size(s.indexrelid)) AS size
+FROM pg_stat_user_indexes s
+JOIN pg_index i USING (indexrelid)
+WHERE s.idx_scan = 0
+  AND NOT i.indisunique
+  AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = s.indexrelid)
+ORDER BY pg_relation_size(s.indexrelid) DESC;
+SELECT stats_reset FROM pg_stat_database WHERE datname = current_database();  -- NULL = never reset
+```
+
+Who blocks whom (a lock queue behind a waiting DDL shows up as a chain):
+
+```sql
+SELECT pid, pg_blocking_pids(pid) AS blocked_by, state, wait_event_type,
+       now() - xact_start AS xact_age, left(query, 60) AS query
+FROM pg_stat_activity
+WHERE cardinality(pg_blocking_pids(pid)) > 0
+   OR pid IN (SELECT unnest(pg_blocking_pids(a.pid)) FROM pg_stat_activity a)
+ORDER BY xact_start;
+-- head of the chain is often 'idle in transaction': pg_terminate_backend(pid) once confirmed safe
 ```
 
 ## Anti-patterns
@@ -204,7 +255,9 @@ ORDER BY pg_relation_size(indexrelid) DESC;
 - `OFFSET`/`LIMIT` for deep pagination — linear cost; use keyset (above).
 - Verifying a rewrite with `EXCEPT` instead of bidirectional `EXCEPT ALL` — silently ignores duplicate-count changes.
 - Trusting a plan whose estimated rows are off by 10x+ — fix statistics (target, extended stats, `ANALYZE`) before adding indexes.
-- Plain `CREATE INDEX`/`REINDEX` on a busy production table — write-blocking lock; use `CONCURRENTLY` and clean up `INVALID` leftovers.
+- Plain `CREATE INDEX`/`REINDEX` on a busy production table — write-blocking lock; use `CONCURRENTLY` and clean up `INVALID` leftovers (no `IF NOT EXISTS` — it hides them).
+- Migrations without `lock_timeout` — one long transaction turns a millisecond `ALTER TABLE` into a full table outage via the lock queue.
+- Dropping "unused" indexes checked only on the primary, or ones backing a unique/exclusion constraint.
 - `INCLUDE`-everything covering indexes — index bloat, dead weight on every write, and no win unless the visibility map is well maintained.
 - Setting `work_mem` high globally "to stop spills" — it multiplies per operation × per session × per parallel worker; scope raises to the session.
 - `shared_buffers` > 40% of RAM, or leaving `effective_cache_size`/`random_page_cost` at defaults on cached/SSD workloads.
@@ -233,6 +286,12 @@ ORDER BY pg_relation_size(indexrelid) DESC;
 - https://www.postgresql.org/docs/current/pgstatstatements.html
 - https://www.postgresql.org/docs/current/how-parallel-query-works.html
 - https://www.postgresql.org/docs/current/sql-select.html
+- https://www.postgresql.org/docs/current/queries-with.html
+- https://www.postgresql.org/docs/current/explicit-locking.html
+- https://www.postgresql.org/docs/current/sql-altertable.html
+- https://www.postgresql.org/docs/current/runtime-config-client.html
+- https://www.postgresql.org/docs/current/monitoring-stats.html
 - https://www.npgsql.org/doc/performance.html
 - https://www.npgsql.org/doc/prepare.html
 - https://www.npgsql.org/doc/release-notes/10.0.html
+- https://www.pgbouncer.org/config.html, https://www.pgbouncer.org/changelog.html

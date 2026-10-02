@@ -10,7 +10,7 @@ Write an RFC (design document) for a proposal that needs up-front design before 
    verifies the background against the repo, forces explicit non-goals, weighs alternatives, plans
    migration/rollout and risks, lists honest open questions, writes the RFC to `docs/rfc/`, and
    regenerates `docs/rfc/index.md`.
-3. If the RFC is being accepted now, have the agent also author the resulting ADR(s) itself by following
+3. If the user states the RFC was accepted (only a human accepts or rejects), have the agent also author the resulting ADR(s) itself by following
    `noobit:adr` (the same agent produces them — no separate dispatch) and cross-link them both ways.
 4. Relay its report: the RFC path, whether the index was regenerated, any ADRs spawned, and any background
    claims it could not verify.

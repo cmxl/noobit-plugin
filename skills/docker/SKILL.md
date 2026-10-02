@@ -13,17 +13,19 @@ Everything Docker except the reverse proxy: cache-friendly multi-stage builds, s
 
 ```dockerfile
 # syntax=docker/dockerfile:1
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# build stages run natively on the build machine and cross-compile to the target arch
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
 WORKDIR /src
-COPY global.json* nuget.config* Directory.*.props Directory.Build.rsp* ./
+COPY global.json* nuget.config* Directory.*.props Directory.Build.targets* Directory.Build.rsp* ./
 COPY src/App.Api/App.Api.csproj src/App.Api/
 RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages \
-    dotnet restore src/App.Api/App.Api.csproj
+    dotnet restore src/App.Api/App.Api.csproj -a $TARGETARCH
 COPY src/ src/
 RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages \
-    dotnet publish src/App.Api/App.Api.csproj -c Release -o /app /p:UseAppHost=false
+    dotnet publish src/App.Api/App.Api.csproj -c Release -a $TARGETARCH -o /app /p:UseAppHost=false
 
-FROM node:22 AS ngbuild
+FROM --platform=$BUILDPLATFORM node:24-slim AS ngbuild
 WORKDIR /web
 COPY web/package*.json ./
 RUN --mount=type=cache,id=npm,target=/root/.npm npm ci
@@ -47,10 +49,11 @@ ENTRYPOINT ["dotnet", "App.Api.dll"]
 
 Build-performance rules baked into that file — these are the point, not decoration:
 
-- **Manifest-first COPY order**, least→most frequently changing: build-config files (`global.json`, `nuget.config`, `Directory.*.props` — under central package management ALL versions live in `Directory.Packages.props`), then csproj manifests, then `dotnet restore`, then sources. A source edit re-runs only publish; restore stays layer-cached. Same shape for npm: `package*.json` → `npm ci` → sources.
+- **Manifest-first COPY order**, least→most frequently changing: build-config files (`global.json`, `nuget.config`, `Directory.*.props`, `Directory.Build.targets` — MSBuild imports all of them when it evaluates the project for restore; under central package management ALL versions live in `Directory.Packages.props`), then csproj manifests, then `dotnet restore`, then sources. A source edit re-runs only publish; restore stays layer-cached. Same shape for npm: `package*.json` → `npm ci` → sources.
 - **Cache mounts are the default, not a CI extra.** `--mount=type=cache` keeps the NuGet/npm download caches across builds even when the restore layer itself is invalidated (csproj/package.json change): packages are re-resolved but not re-downloaded. `id=` shares one cache across Dockerfiles. Details and apt-cache variant: [references/best-practices.md](references/best-practices.md).
+- **Cross-arch safe.** Without `--platform=$BUILDPLATFORM` + `-a $TARGETARCH`, an arm64 dev box (Apple Silicon) builds an arm64 image that won't run on an amd64 server. The build stages run natively and cross-compile (the dotnet-docker samples' pattern); the Angular output is architecture-neutral. Choose the target with `docker build --platform linux/amd64 .`.
 - **Independent stages build in parallel.** BuildKit runs the .NET and Angular stages concurrently and rebuilds only the stage whose inputs changed. Node is a build stage only; the runtime image never contains node.
-- Solutions with many projects: restore-layer patterns in [references/best-practices.md](references/best-practices.md).
+- Solutions with many projects: `COPY --parents src/*/*.csproj ./` replaces the per-project csproj lines (keeps the folder structure); details in [references/best-practices.md](references/best-practices.md).
 
 ## .dockerignore (always)
 
@@ -82,28 +85,39 @@ services:
   app:
     build: .
     restart: unless-stopped
+    # .NET 8+ images already set ASPNETCORE_HTTP_PORTS=8080 — no ASPNETCORE_URLS needed
     environment:
-      ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__Default: ${DB_CONNECTION}
       ConnectionStrings__Redis: redis:6379
+      ForwardedHeaders__KnownNetwork: 172.28.0.0/16   # = the internal network's subnet below (nginx-deploy)
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
     networks: [internal]
+    logging: { driver: local }
   db:
     image: postgres:18
+    restart: unless-stopped
     # 18+ images keep data in /var/lib/postgresql/18/docker — mount the parent, not .../data
     volumes: [dbdata:/var/lib/postgresql]
     environment: { POSTGRES_PASSWORD: ${DB_PASSWORD} }
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 10s }
     networks: [internal]
+    logging: { driver: local }
   redis:
     image: redis:8
+    restart: unless-stopped
     # cache only: evicts and has no persistence — never Data Protection keys or other must-keep data
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
     healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 10s }
     networks: [internal]
-networks: { internal: {} }
+    logging: { driver: local }
+networks:
+  internal:
+    ipam:
+      # fixed subnet → the app's trusted proxy network can name it exactly (nginx-deploy). Must be unique
+      # per host (a second stack on the same host needs another one); change compose + app config together.
+      config: [{ subnet: 172.28.0.0/16 }]
 volumes: { dbdata: {} }
 ```
 
@@ -119,15 +133,17 @@ services, a profile can keep them off a dev machine. The server's `.env` sets `C
 `/var/lib/postgresql/data`) and refuses to start. A major upgrade always needs dump/restore or
 `pg_upgrade` into the new `/var/lib/postgresql` mount — never just bump the tag.
 
+**Log rotation:** Docker's default `json-file` driver does no rotation — container logs grow until the disk is full. Every service gets `logging: { driver: local }` (rotates by default: 5 × 20 MB, compressed); `json-file` alternative in [references/best-practices.md](references/best-practices.md).
+
 In production the nginx + certbot services from `nginx-deploy` join this file; **only nginx publishes ports** (80/443) — never db/redis/rabbit. Secrets via a gitignored `.env` or compose `secrets:` — never in the compose file or image. RabbitMQ when needed: `rabbitmq:4-management`, health `rabbitmq-diagnostics -q ping`, management UI bound to localhost only.
 
-## Fast redeploy (one service, no downtime for the rest)
+## Fast redeploy (one service, the rest keep running)
 
 ```bash
 docker compose build app && docker compose up --no-deps -d app
 ```
 
-Never `docker compose up --build` for a one-service change — it evaluates and may bounce every service.
+`app` itself is still recreated — seconds of downtime for it (nginx answers 502 meanwhile); true zero-downtime needs a second instance behind the proxy. `--no-deps` is the point: without it `up app` also recreates any dependency whose config or image changed (a bumped `postgres` tag restarts the database). Compose only recreates containers whose config or image changed, so `up --build` is no blanket restart — but it rebuilds every service with a `build:` section.
 
 ## Finding slow or cache-busting layers
 
@@ -143,12 +159,14 @@ Never `docker compose up --build` for a one-service change — it evaluates and 
 | `apt-get update` in its own `RUN` | Combine with install + `rm -rf /var/lib/apt/lists/*` in one layer (unless using the apt cache-mount variant — see references) |
 | No `.dockerignore` | `**/bin`, `**/obj`, `node_modules`, `dist`, `.git` |
 | Secrets as `ENV`/`ARG` in the Dockerfile | Persist in image history — runtime env or compose `secrets:` |
-| `latest` image tags in prod | Pin major.minor; digest-pin for supply-chain safety |
+| `latest` image tags in prod | Pin each image's compatibility line (`aspnet:10.0`, `postgres:18`, `node:24-slim` — see references); digest-pin for supply-chain safety |
 | Running as root | `USER $APP_UID`; writable paths mounted explicitly |
 | Publishing db/redis/rabbit ports to host | Internal network only; `ports:` solely on the reverse proxy |
 | No healthchecks | Every service defines one; `depends_on.condition: service_healthy`; no sleep hacks |
 | No `--start-period` on the app healthcheck | Migrations/cold start marked unhealthy → restart loops |
 | `docker compose up` rebuilding everything per change | `docker compose build app && docker compose up --no-deps -d app` |
+| Default `json-file` log driver | Never rotates → full disk; `logging: { driver: local }` per service |
+| Image built on an arm64 Mac, deployed to amd64 | `FROM --platform=$BUILDPLATFORM` build stages + `-a $TARGETARCH` |
 
 ## Official docs — verify, don't guess
 

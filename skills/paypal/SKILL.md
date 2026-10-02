@@ -1,6 +1,6 @@
 ---
 name: paypal
-description: Use when integrating PayPal — adding PayPal buttons or card fields to a website (JS SDK v6/v5, paypal-js, react-paypal-js, createOrder/onApprove), Orders v2 checkout, capturing or refunding payments, PayPal webhooks (registering, receiving, verifying PAYPAL-TRANSMISSION-SIG signatures, event types like PAYMENT.CAPTURE.COMPLETED), storing webhook events in an inbox/staging table, reconciling PayPal transactions, PayPal sandbox or webhook simulator testing, or PayPalServerSDK questions. Also when a PayPal payment or webhook went missing, was booked twice, or failed verification.
+description: Use when integrating PayPal — adding PayPal buttons or card fields to a website (JS SDK v6/v5, paypal-js, react-paypal-js, Angular, createOrder/onApprove), Orders v2 checkout, capturing or refunding payments, PayPal webhooks (registering, receiving, verifying PAYPAL-TRANSMISSION-SIG signatures, event types like PAYMENT.CAPTURE.COMPLETED), storing webhook events in an inbox/staging table, reconciling PayPal transactions, PayPal sandbox or webhook simulator testing, or PayPalServerSDK questions. Also when a PayPal payment or webhook went missing, was booked twice, or failed verification.
 ---
 
 # PayPal (REST APIs + webhooks)
@@ -22,10 +22,10 @@ The facts in this skill were verified against official docs and PayPal's OpenAPI
 | File | Read when |
 |---|---|
 | [references/docs-map.md](references/docs-map.md) | You need a fact not in this skill — where to look, in which order, and known contradictions between official sources |
-| [references/website-checkout.md](references/website-checkout.md) | Putting PayPal on a website: JS SDK v6 (v5 for existing code), buttons, card fields + 3DS, the create/capture server endpoints, CSP, sandbox testing |
+| [references/website-checkout.md](references/website-checkout.md) | Putting PayPal on a website: JS SDK v6 (v5 for existing code), Angular service, buttons, card fields + 3DS, the create/capture server endpoints, CSP, sandbox testing |
 | [references/webhooks.md](references/webhooks.md) | Registering a webhook, choosing event types, receiving endpoint code, signature verification (postback + offline), simulator, resend |
 | [references/inbox-table.md](references/inbox-table.md) | Designing the webhook inbox/staging table, claiming work, statuses, tenant resolution, retention |
-| [references/orders-payments.md](references/orders-payments.md) | Orders v2 flow, capture/refund, `PayPal-Request-Id` idempotency, `custom_id`/`invoice_id`, OAuth token, statuses, reconciliation, SDK |
+| [references/orders-payments.md](references/orders-payments.md) | Orders v2 flow, capture/refund, `PayPal-Request-Id` idempotency, `custom_id`/`invoice_id`, OAuth token, typed `IPayPalClient` sketch, statuses, reconciliation, SDK |
 
 ## Core rules
 
@@ -44,12 +44,15 @@ The facts in this skill were verified against official docs and PayPal's OpenAPI
 6. **Verify every event** (postback API or offline RSA/CRC32) in the processor, not at ingress, and
    **before reading anything from its body** — tenant lookups included. Failed verification or missing
    signature headers → status `Rejected`, never booked.
-7. **Don't trust the payload's status/amount.** Re-fetch the resource (`GET /v2/payments/captures/{id}`)
-   and book what PayPal's API says now. This also neutralises out-of-order delivery.
+7. **Don't trust the payload's status/amount.** Re-fetch the resource named by `resource_type`
+   (`capture` → `/v2/payments/captures/{id}`, `refund` → `/v2/payments/refunds/{id}` — never route on the
+   event-name prefix: `PAYMENT.CAPTURE.REFUNDED` carries a refund) and book what PayPal's API says now.
+   This also neutralises out-of-order delivery.
 8. **One booking routine, forward-only.** The synchronous capture response and the webhook both call
    it. It upserts by capture id and only moves a capture forward (`PENDING` → `COMPLETED` →
-   `PARTIALLY_REFUNDED` → `REFUNDED`); "already exists" is **not** "already done". Before marking paid,
-   it checks captured amount + currency against the expected values stored at order creation.
+   `PARTIALLY_REFUNDED` → `REFUNDED`); "already exists" is **not** "already done". "Paid" fires when the
+   rank *crosses* `COMPLETED` (a capture first seen as `PARTIALLY_REFUNDED` was paid too), after checking
+   captured amount + currency + payee against the values stored at order creation.
 9. **Your order mapping is the only proof of ownership.** The processor resolves an event through the
    `paypal_order_id → tenant/checkout/expected amount` row your server wrote at order creation.
    `custom_id` is a cross-check, never a key. Not found → `Unmatched`, alert, keep the row.
@@ -64,7 +67,7 @@ The facts in this skill were verified against official docs and PayPal's OpenAPI
 |---|---|
 | Website SDK | **v6** for new code: `https://www.paypal.com/web-sdk/v6/core` (sandbox: `www.sandbox.paypal.com`), `paypal.createInstance({ clientId })`; v5 (`/sdk/js?client-id=`) is labelled deprecated — existing code only |
 | Base URLs | sandbox `https://api-m.sandbox.paypal.com` · live `https://api-m.paypal.com` |
-| OAuth | `POST /v1/oauth2/token` `grant_type=client_credentials`; cache the token until `expires_in` (minus a margin) |
+| OAuth | `POST /v1/oauth2/token` `grant_type=client_credentials`; cache the token until `expires_in` (minus a margin) — FusionCache, L1 only |
 | Create / capture | `POST /v2/checkout/orders` → buyer approves (`rel: approve` link) → `POST /v2/checkout/orders/{id}/capture` |
 | Idempotency | `PayPal-Request-Id` header on create, capture, authorize, refund (keep ≤ 108 chars — the Orders API limit) |
 | Register webhook | `POST /v1/notifications/webhooks` — max 10 webhook URLs per app; save the returned `id` per environment |
@@ -84,6 +87,7 @@ The facts in this skill were verified against official docs and PayPal's OpenAPI
 | Business logic or tenant lookup before insert | "Not found → skip" silently drops real payments | Insert first; processor resolves, `Unmatched` status |
 | Postback with `JsonSerializer.Serialize(parsedEvent)` | `FAILURE` on genuine events | Splice the stored raw body into the request JSON verbatim |
 | Trusting `resource.status == COMPLETED` | Forged/stale events book money | Verify signature **and** re-fetch the capture |
+| Routing `PAYMENT.CAPTURE.*` events to the captures endpoint | `REFUNDED` carries a refund id → 404 → DeadLetter | Route on `resource_type` |
 | Webhook and capture response book separately | Double booking | Shared routine keyed on capture id |
 | "Duplicate capture id = already booked" | `PENDING` stored first, `COMPLETED` later ignored — paid order never marked paid | Forward-only status upsert (see inbox-table.md) |
 | Resolving the order from `custom_id` / not checking the captured amount | Someone pays 0.01 for your checkout | Resolve via your order mapping; compare amount + currency before booking |

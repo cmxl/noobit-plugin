@@ -20,7 +20,7 @@ Ignore: the repository-over-EF ceremony as a default — our convention is DbCon
 Study: every entry in AsyncGuidance.md — it's the long form of our "no sync-over-async" rules.
 Caveat: predates .NET 9/10 idioms; no license file (read, don't vendor).
 
-**microsoft/aspire + microsoft/aspire-samples** — https://github.com/dotnet/aspire-samples — very active; the official distributed-app reference surface in 2026 (now polyglot, versioned independently as 13.x).
+**microsoft/aspire + microsoft/aspire-samples** — https://github.com/microsoft/aspire · https://github.com/microsoft/aspire-samples (moved from `dotnet/`) — very active; the official distributed-app reference surface in 2026 (now polyglot, versioned independently as 13.x).
 Study: service defaults (resilience + OpenTelemetry wiring), health check conventions — the current official take even though we orchestrate with Compose instead.
 
 **NimblePros/eShopOnWeb** — https://github.com/NimblePros/eShopOnWeb — ASP.NET Core 10, active; the maintained community continuation of the classic monolith reference.

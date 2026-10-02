@@ -1,6 +1,6 @@
 ---
 name: postgres
-description: Use when working with PostgreSQL — slow queries, EXPLAIN ANALYZE, index design (B-tree/GIN/BRIN/partial), query rewrites and verifying they return identical data, vacuum/bloat, or tuning Postgres for an ASP.NET Core app with Npgsql.
+description: Use when working with PostgreSQL — slow queries, EXPLAIN ANALYZE, index design (B-tree/GIN/BRIN/partial), query rewrites and verifying they return identical data, vacuum/bloat, locks/blocking and safe production DDL/migrations, or tuning Postgres for an ASP.NET Core app with Npgsql.
 ---
 
 # PostgreSQL
@@ -35,15 +35,15 @@ SELECT 'only_in_new' AS side, * FROM (SELECT * FROM new_q EXCEPT ALL SELECT * FR
 -- must return 0 rows
 ```
 
-   `EXCEPT` treats NULLs as equal — correct for this comparison.
-4. **Large sets**: order-independent checksum, e.g. `SELECT md5(string_agg(t::text, ',' ORDER BY <unique key>)) FROM (<query>) t` on both sides; or count + per-column aggregates as a cheap first pass.
+   `EXCEPT` treats NULLs as equal — correct for this comparison. Types without an equality operator (`json`, `point`, …) fail with "could not identify an equality operator" — cast them (`::jsonb`, `::text`) identically on both sides.
+4. **Large sets**: order-independent checksum, e.g. `SELECT md5(string_agg(t::text, ',' ORDER BY t::text)) FROM (<query>) t` on both sides — order by the whole row text, not a "unique key" (after a fan-out the key repeats → nondeterministic order → false mismatches); or count + per-column aggregates as a cheap first pass.
 5. Comparisons are order-independent; if the consumer depends on order, compare with `row_number() OVER (ORDER BY ...)` included.
 
 ## Joins — no cartesian explosions
 
 - Join predicates must cover the **complete** key — composite keys need every column. A missing column silently multiplies rows.
 - Detect fan-out: `EXPLAIN ANALYZE` actual row counts ballooning at a join node far beyond both inputs; repeated parent values in output.
-- Aggregating over a fanned-out join double-counts — aggregate in a subquery/CTE *before* joining, or `COUNT(DISTINCT key)` knowingly. (CTEs are inlined since PG12; they no longer block optimization by default.)
+- Aggregating over a fanned-out join double-counts — aggregate in a subquery/CTE *before* joining, or `COUNT(DISTINCT key)` knowingly. (Since PG12 a non-recursive, side-effect-free CTE referenced **once** is inlined; one referenced twice — like `old_q`/`new_q` above — is materialized. Force with `[NOT] MATERIALIZED`.)
 - `CROSS JOIN`/`LATERAL` only ever explicit and intentional; comma joins are a review failure.
 - EF note: multiple collection `Include`s in single-query mode = cartesian product — `AsSplitQuery()` (see `data-access`).
 
@@ -55,15 +55,23 @@ SELECT 'only_in_new' AS side, * FROM (SELECT * FROM new_q EXCEPT ALL SELECT * FR
 - **GIN** for `jsonb` containment, arrays, full-text; **GiST** for ranges/geometry/nearest-neighbor; **BRIN** for huge append-only tables with natural ordering (timestamps) — tiny and cheap.
 - `LIKE 'abc%'` uses a B-tree only with the C collation or a `text_pattern_ops` index; `LIKE '%abc'` never does (trigram GIN via `pg_trgm` if needed).
 - Don't index churn-heavy columns unnecessarily — updates to indexed columns defeat HOT updates and inflate bloat.
-- Production DDL: `CREATE INDEX CONCURRENTLY` (and `REINDEX CONCURRENTLY` for bloat) — plain `CREATE INDEX` takes a write-blocking lock.
+- Production DDL: `CREATE INDEX CONCURRENTLY` (and `REINDEX CONCURRENTLY` for bloat) — plain `CREATE INDEX` takes a write-blocking lock. Never with `IF NOT EXISTS`: a re-run silently skips a failed `INVALID` leftover (see reference).
 - FK columns are **not** auto-indexed by Postgres — index them explicitly (joins + FK checks on parent deletes).
+
+## Locks and production DDL
+
+- Most `ALTER TABLE` forms take `ACCESS EXCLUSIVE`. Waiting behind one long transaction, the DDL **queues every later query on the table behind it** (even plain `SELECT`s) — a "fast" migration becomes an outage.
+- Migrations: `SET lock_timeout = '5s'` (fail fast, retry) and a `statement_timeout`; set `idle_in_transaction_session_timeout` for app roles so forgotten transactions can't pin locks.
+- Diagnose with `pg_blocking_pids(pid)` over `pg_stat_activity` — query in the reference.
+- Big tables: `ADD CONSTRAINT … NOT VALID` (FK/CHECK; NOT NULL on PG 18+), then `VALIDATE CONSTRAINT` (lighter lock, writes keep going).
+- Queue/outbox polling: `SELECT … FOR UPDATE SKIP LOCKED` so workers don't block each other — queue tables only.
 
 ## Common mistakes
 
 | Mistake | Fix |
 |---|---|
 | `timestamp` vs `timestamptz` mixing | `timestamptz` everywhere (UTC); casts in predicates kill indexes |
-| `OFFSET 100000 LIMIT 20` pagination | Keyset pagination (`WHERE (created, id) < (?, ?) ORDER BY created DESC, id DESC`) |
+| `OFFSET 100000 LIMIT 20` pagination | Keyset pagination (`WHERE (created, id) < (@created, @id) ORDER BY created DESC, id DESC`) |
 | Function on an indexed column in WHERE | Expression index with the identical expression, or rewrite the predicate |
 | Assuming FKs are indexed | Index FK columns explicitly |
 | `count(*)` as a cheap existence check | `EXISTS (SELECT 1 ...)` |

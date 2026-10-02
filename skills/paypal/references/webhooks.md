@@ -33,20 +33,25 @@ Register **separate webhooks for sandbox and live** — different apps, differen
 | `PAYMENT.CAPTURE.COMPLETED` | capture | Book the payment (idempotent on capture id) |
 | `PAYMENT.CAPTURE.PENDING` | capture | Record pending + `status_details.reason`; don't treat as paid; wait for COMPLETED |
 | `PAYMENT.CAPTURE.DECLINED` (v1/platform name: `.DENIED`) | capture | Mark failed; handling both names is harmless |
-| `PAYMENT.CAPTURE.REFUNDED` | see `resource_type` | Record refund — **includes refunds made in the PayPal dashboard**, not only via your API |
-| `PAYMENT.CAPTURE.REVERSED` | see `resource_type` | Chargeback/reversal — money is gone; mark the capture (keyed on capture id) as reversed and alert |
+| `PAYMENT.CAPTURE.REFUNDED` | refund (spec sample) — route on `resource_type` | Record refund — **includes refunds made in the PayPal dashboard**, not only via your API |
+| `PAYMENT.CAPTURE.REVERSED` | route on `resource_type` (UNVERIFIED) | Chargeback/reversal — money is gone; mark the capture (keyed on capture id) as reversed and alert |
 | `CHECKOUT.ORDER.APPROVED` | order | Buyer approved but your client may never have called capture → capture server-side (with `PayPal-Request-Id`) |
 | `CHECKOUT.PAYMENT-APPROVAL.REVERSED` | order | Approval reversed before capture — cancel the pending order |
 | `PAYMENT.REFUND.PENDING` / `.FAILED` | refund | Only if you issue refunds via API and need their final state |
 | `PAYMENT.AUTHORIZATION.CREATED` / `.VOIDED` | authorization | Only with `intent: AUTHORIZE` |
 | `CUSTOMER.DISPUTE.CREATED` / `.UPDATED` / `.RESOLVED` | dispute | Only if you handle disputes |
 
-**Refund events and the refund id:** official sources link `PAYMENT.CAPTURE.REFUNDED` / `.REVERSED`
-to inconsistent schemas (UNVERIFIED which resource you get). Check `resource_type` on a real sandbox
-refund before coding: if it is `refund`, `resource.id` is the refund id — re-fetch via
-`GET /v2/payments/refunds/{id}` and dedupe on it. If it is `capture`, the event carries no refund id —
-re-fetch the capture for its new status/amounts and find the refund transaction via Transaction Search
-(`transaction_id` filter); refunds made through your own API already return their id in the refund response.
+**Refund events and the refund id — route on `resource_type`, never on the event-name prefix.** The
+Payments v2 spec's sample `PAYMENT.CAPTURE.REFUNDED` event has `resource_type: "refund"`: `resource.id`
+is the **refund** id (re-fetch via `GET /v2/payments/refunds/{id}`, dedupe on it) and the capture is the
+`links[]` entry with `rel: "up"`. Sending that id to `/v2/payments/captures/{id}` just 404s. For
+`.REVERSED` no official sample exists (UNVERIFIED which resource you get) — check `resource_type` on
+each event. If an event ever carries a `capture` resource instead, it has no refund id: re-fetch the
+capture for its new status/amounts and find the refund via Transaction Search — `transaction_id` won't
+work (a capture id returns the capture itself); query a date window from the capture time with
+`transaction_type=T1107` (payment refund) and match `transaction_info.paypal_reference_id` == capture id
+(the field is documented as the related, pre-existing transaction; confirm on a sandbox refund).
+Refunds made through your own API already return their id in the refund response.
 
 `CHECKOUT.ORDER.COMPLETED` is documented as "for marketplaces and platforms only". Avoid `*` in
 production — it stores payer data you don't need. The authoritative list for your account:
@@ -94,19 +99,23 @@ app.MapPost("/webhooks/paypal", async (HttpRequest request, InboxDbContext db, T
     var body = Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
 
     var (eventId, eventType, resourceId) = TryReadEnvelope(body);   // tolerant: nulls on garbage
+    var environment = options.Value.Environment;                    // "sandbox" | "live"
+    var path = request.Path.Value!;                                 // carries the tenant key in per-tenant-app setups
+    var headers = HeadersToJson(request.Headers);
+    var now = clock.GetUtcNow();
 
     db.WebhookInbox.Add(new WebhookInboxRow
     {
         Provider = WebhookProvider.PayPal,
-        Environment = options.Value.Environment,           // "sandbox" | "live"
+        Environment = environment,
         DedupKey = eventId,
         EventType = eventType,
         ResourceId = resourceId,
-        RequestPath = request.Path,                        // carries the tenant key in per-tenant-app setups
-        Headers = HeadersToJson(request.Headers),
+        RequestPath = path,
+        Headers = headers,
         Body = body,
-        ReceivedAt = clock.GetUtcNow(),
-        NextAttemptAt = clock.GetUtcNow(),
+        ReceivedAt = now,
+        NextAttemptAt = now,
     });
 
     try
@@ -115,10 +124,31 @@ app.MapPost("/webhooks/paypal", async (HttpRequest request, InboxDbContext db, T
     }
     catch (DbUpdateException ex) when (IsUniqueViolation(ex))
     {
-        // PayPal retry of an event we already have — success.
-        // The key comes from an unverified body: if the existing row ended up Rejected (a forgery that
-        // reused a real event id), store this delivery anyway — e.g. reset that row to Pending with the
-        // new headers/body — so a genuine event can't be swallowed by an earlier fake.
+        // Same event id already stored. The id comes from an unverified body, so a forgery can claim a
+        // real event's id first — it must never swallow the genuine delivery.
+        var sameEvent = db.WebhookInbox.Where(r =>
+            r.Provider == WebhookProvider.PayPal && r.Environment == environment && r.DedupKey == eventId);
+
+        // stored row was Rejected → replace it with this delivery and verify again
+        var replaced = await sameEvent.Where(r => r.Status == WebhookStatus.Rejected)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.Status, WebhookStatus.Pending)
+                .SetProperty(r => r.SignatureStatus, SignatureStatus.Unverified)
+                .SetProperty(r => r.EventType, eventType)
+                .SetProperty(r => r.ResourceId, resourceId)
+                .SetProperty(r => r.RequestPath, path)
+                .SetProperty(r => r.Headers, headers)
+                .SetProperty(r => r.Body, body)
+                .SetProperty(r => r.ReceivedAt, now)
+                .SetProperty(r => r.Attempts, 0)
+                .SetProperty(r => r.NextAttemptAt, now)
+                .SetProperty(r => r.LastError, (string?)null), ct);
+
+        // stored row not verified yet → can't tell which copy is genuine; 503 makes PayPal retry later,
+        // by then the stored row is either verified (→ 200) or Rejected (→ replaced above)
+        if (replaced == 0 && await sameEvent.AnyAsync(r => r.SignatureStatus == SignatureStatus.Unverified, ct))
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        // otherwise a verified copy exists: a genuine PayPal retry — success
     }
     return Results.Ok();                                   // any other exception → 500 → PayPal retries
 })
@@ -179,12 +209,22 @@ static bool IsUniqueViolation(DbUpdateException ex) =>
 
 - The entity maps PascalCase properties to the snake_case columns of [inbox-table.md](inbox-table.md)
   (`ToTable("webhook_inbox")` + `HasColumnName`, or a snake_case naming convention); enums stored in
-  `TINYINT` columns need a `byte` backing type (`enum WebhookProvider : byte`).
+  `TINYINT` columns need a `byte` backing type (`enum WebhookProvider : byte`, `WebhookStatus`,
+  `SignatureStatus`).
+- **Duplicate event id:** the three branches above are what keeps a forged event that reused a real
+  event id from swallowing the genuine one — the processor must set `signature_status` (1 valid /
+  2 invalid) when it verifies. A test should cover forged-first-then-genuine for both the Rejected and the
+  still-unverified case.
 - The endpoint is anonymous by necessity. Unlike HMAC-signed webhooks it does **not** verify at the door:
   PayPal's RSA signature is checked asynchronously in the processor, so a verification bug or a PayPal
   cert outage never loses an event. Its protection at ingress is the body cap above plus a
   **global fixed-window rate limiter** on this route (PayPal publishes no stable source IPs to
   partition or allow-list on), sized well above your real event rate.
+- **The global limiter is itself an attack surface:** anyone can fill the window with junk and push
+  genuine PayPal deliveries into 429s. Those are retried (up to 25 times over 3 days), so a short flood
+  only delays events; a sustained one can exhaust the retries. Alert on the **429 rate on this route**,
+  block abusive source IPs at the edge (WAF / reverse proxy), and rely on reconciliation for anything
+  that still falls through.
 - Exclude it from antiforgery, auth redirects, response compression quirks, and any middleware that
   reads/rewrites the body.
 - Per-tenant-app setups map `/webhooks/paypal/{key}`. The key acts as a credential-like selector — keep
@@ -253,14 +293,17 @@ certificate comes from `PAYPAL-CERT-URL` and should be cached.
 //   services.AddSingleton<PayPalSignatureVerifier>();
 // trustCheck: tests pass their own (self-signed certs don't chain); production uses the default
 public sealed class PayPalSignatureVerifier(IHttpClientFactory httpClientFactory, TimeProvider clock,
-                                           Func<X509Certificate2, bool>? trustCheck = null)
+                                           Func<X509Certificate2, X509Certificate2Collection, bool>? trustCheck = null)
 {
+    private const int MaxCertBytes = 64 * 1024;                    // a PEM chain is a few KB
     private static readonly string[] CertHosts =
         ["api.paypal.com", "api-m.paypal.com", "api.sandbox.paypal.com", "api-m.sandbox.paypal.com"];
     private static readonly string[] CertSubjects =
         ["messageverificationcerts.paypal.com", "messageverificationcerts.sandbox.paypal.com"];
 
-    private readonly ConcurrentDictionary<string, X509Certificate2> _certs = new();
+    // caches the public key + validity only — no X509Certificate2 instances to dispose or race on
+    private sealed record PayPalCert(RSAParameters Key, DateTime NotBefore, DateTime NotAfter);
+    private readonly ConcurrentDictionary<string, PayPalCert> _certs = new();
 
     public async Task<bool> VerifyAsync(IReadOnlyDictionary<string, string> h, string webhookId,
                                         string rawBody, CancellationToken ct)
@@ -278,44 +321,70 @@ public sealed class PayPalSignatureVerifier(IHttpClientFactory httpClientFactory
         var crc = Crc32.HashToUInt32(Encoding.UTF8.GetBytes(rawBody));
         var signed = $"{transmissionId}|{transmissionTime}|{webhookId}|{crc}";
 
-        var cert = await GetCertAsync(certUri, ct);
-        if (cert is null) return false;
-        using var rsa = cert.GetRSAPublicKey();
-        return rsa is not null && rsa.VerifyData(Encoding.UTF8.GetBytes(signed), signature.AsSpan(0, sigLength),
-                                                 HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        if (await GetCertAsync(certUri, ct) is not { } cert) return false;
+        using var rsa = RSA.Create(cert.Key);
+        return rsa.VerifyData(Encoding.UTF8.GetBytes(signed), signature.AsSpan(0, sigLength),
+                              HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
     }
 
     // null = not a usable PayPal cert → verification fails (Rejected), never an exception (→ retries)
-    private async Task<X509Certificate2?> GetCertAsync(Uri uri, CancellationToken ct)
+    private async Task<PayPalCert?> GetCertAsync(Uri uri, CancellationToken ct)
     {
         var key = uri.GetLeftPart(UriPartial.Path);                  // query/fragment can't grow the cache
-        var now = clock.GetUtcNow();
-        if (_certs.TryGetValue(key, out var cached) && IsCurrent(cached, now)) return cached;
+        var now = clock.GetUtcNow().UtcDateTime;
+        if (_certs.TryGetValue(key, out var cached) && cached.NotBefore <= now && now < cached.NotAfter) return cached;
 
-        using var response = await httpClientFactory.CreateClient("paypal-certs").GetAsync(key, ct);
+        using var response = await httpClientFactory.CreateClient("paypal-certs")
+            .GetAsync(key, HttpCompletionOption.ResponseHeadersRead, ct);
         if ((int)response.StatusCode is >= 300 and < 500) return null;   // redirect or 4xx: not a cert
         response.EnsureSuccessStatusCode();                              // 5xx: transient → retry later
+        if (await ReadCappedAsync(response.Content, MaxCertBytes, ct) is not { } pem) return null;
 
-        X509Certificate2 cert;
-        try { cert = X509Certificate2.CreateFromPem(await response.Content.ReadAsStringAsync(ct)); }
-        catch (CryptographicException) { return null; }
+        var certs = new X509Certificate2Collection();
+        try
+        {
+            try { certs.ImportFromPem(pem); }
+            catch (CryptographicException) { return null; }
 
-        if (!IsCurrent(cert, now) || !(trustCheck ?? IsTrustedPayPalCert)(cert)) return null;
-        _certs[key] = cert;
-        return cert;
+            // leaf = PayPal's verification-cert subject; any other certs in the PEM are intermediates
+            var leaf = certs.FirstOrDefault(c => CertSubjects.Contains(
+                c.GetNameInfo(X509NameType.DnsName, forIssuer: false), StringComparer.OrdinalIgnoreCase));
+            if (leaf is null) return null;
+            var (notBefore, notAfter) = (leaf.NotBefore.ToUniversalTime(), leaf.NotAfter.ToUniversalTime());
+            if (now < notBefore || now >= notAfter) return null;
+
+            var intermediates = new X509Certificate2Collection(certs.Where(c => c != leaf).ToArray());
+            if (!(trustCheck ?? IsTrustedChain)(leaf, intermediates)) return null;
+
+            using var rsa = leaf.GetRSAPublicKey();
+            if (rsa is null) return null;
+            return _certs[key] = new PayPalCert(rsa.ExportParameters(includePrivateParameters: false), notBefore, notAfter);
+        }
+        finally
+        {
+            foreach (var c in certs) c.Dispose();
+        }
     }
 
-    private static bool IsCurrent(X509Certificate2 cert, DateTimeOffset now) =>
-        cert.NotBefore.ToUniversalTime() <= now.UtcDateTime && now.UtcDateTime < cert.NotAfter.ToUniversalTime();
-
-    // Chain to a trusted public CA + PayPal's verification-cert subject. The PEM holds only the leaf;
-    // .NET fetches intermediates via AIA. Revocation off: a CRL/OCSP outage must not reject real events.
-    private static bool IsTrustedPayPalCert(X509Certificate2 cert)
+    // Chain to a trusted public CA; intermediates from the PEM go into ExtraStore (AIA fetch covers the
+    // rest). Revocation off: a CRL/OCSP outage must not reject real events.
+    private static bool IsTrustedChain(X509Certificate2 leaf, X509Certificate2Collection intermediates)
     {
         using var chain = new X509Chain();
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        return chain.Build(cert) &&
-               CertSubjects.Contains(cert.GetNameInfo(X509NameType.DnsName, forIssuer: false), StringComparer.OrdinalIgnoreCase);
+        chain.ChainPolicy.ExtraStore.AddRange(intermediates);
+        try { return chain.Build(leaf); }
+        finally { foreach (var e in chain.ChainElements) e.Certificate.Dispose(); }
+    }
+
+    private static async Task<string?> ReadCappedAsync(HttpContent content, int maxBytes, CancellationToken ct)
+    {
+        if (content.Headers.ContentLength > maxBytes) return null;
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        var buffer = new byte[maxBytes + 1];
+        int total = 0, read;
+        while (total < buffer.Length && (read = await stream.ReadAsync(buffer.AsMemory(total), ct)) > 0) total += read;
+        return total > maxBytes ? null : Encoding.ASCII.GetString(buffer, 0, total);
     }
 
     // Not documented by PayPal — never fetch a "cert" from anywhere but PayPal's cert endpoint.
@@ -335,8 +404,9 @@ public sealed class PayPalSignatureVerifier(IHttpClientFactory httpClientFactory
 - Optionally reject events whose `PAYPAL-TRANSMISSION-TIME` is far in the past (replay window) — but
   remember legitimate retries arrive up to 3 days later.
 
-**Either way, then re-fetch the resource** (`GET /v2/payments/captures/{id}` etc.) and act on the API's
-current state, not the event's — a verified event can still be stale.
+**Either way, then re-fetch the resource named by `resource_type`** (`capture` → `/v2/payments/captures/{id}`,
+`refund` → `/v2/payments/refunds/{id}`; see [inbox-table.md](inbox-table.md#processing-one-row)) and act on
+the API's current state, not the event's — a verified event can still be stale.
 
 ## 6. Testing
 
@@ -352,5 +422,6 @@ Automated tests: feed recorded real sandbox deliveries (body + headers) into the
 (a) one row per event id, (b) duplicates return 200 without a second row, (c) unparseable bodies are
 still stored, (d) the processor books once even when the capture response and the webhook both arrive,
 (e) `PENDING` followed by `COMPLETED` for the same capture ends `COMPLETED`, (f) a captured amount that
-differs from the expected one is not booked. Unit-test the offline verifier with a self-signed cert (pass `trustCheck: _ => true`) and a stub
-HTTP handler: valid, tampered body, wrong webhook id, foreign cert host, missing header, expired cert.
+differs from the expected one is not booked. Unit-test the offline verifier with a test CA + leaf `CN=messageverificationcerts.paypal.com` (the
+subject check always applies; pass `trustCheck: (_, _) => true`) and a stub HTTP handler: valid, tampered
+body, wrong webhook id, foreign cert host, missing header, expired cert, oversized cert response.

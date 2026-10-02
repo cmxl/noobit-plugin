@@ -4,14 +4,14 @@ This covers **state persistence**: saving store state to `localStorage`/`session
 restoring it on reload. ("Hydration" here is a metaphor and is unrelated to Angular SSR client
 hydration — for that, see the note at the end.)
 
-Verified against NgRx v21 / Angular v20+. Pick the approach that matches the store type.
+Verified against NgRx 22.0.1 / Angular 22. Pick the approach that matches the store type.
 
 ## Contents
 1. Cross-cutting rules (SSR safety, versioning, whitelisting)
 2. Classic Store — hydration meta-reducer (hand-rolled)
 3. Classic Store — `ngrx-store-localstorage` (library)
 4. Signal Store — custom `withStorageSync` feature (hand-rolled)
-5. Signal Store — `@angular-architects/ngrx-toolkit` (library)
+5. Signal Store — `@ngrx-toolkit/core` (library)
 6. Choosing an approach
 7. Note: SSR client hydration is a different thing
 
@@ -98,7 +98,9 @@ on every state-changing action, so keep persisted slices small or debounce the w
 
 ## 3. Classic Store — `ngrx-store-localstorage` (library)
 
-Still maintained; match the major to your Angular major (Angular 21 → `ngrx-store-localstorage@21.x`).
+Community library, not part of NgRx. Latest is `20.1.0` (Jan 2026) with open-ended peers
+(`@angular/core` / `@ngrx/store` `>=20`) — there is no 21.x/22.x; check `npm view ngrx-store-localstorage`
+before pinning, since it lags NgRx majors.
 It's just a meta-reducer factory, so it drops into `provideStore`:
 
 ```ts
@@ -158,7 +160,7 @@ export function withStorageSync<State extends object>(config: {
 
 // usage
 export const FilterStore = signalStore(
-  withState({ query: '', order: 'asc' as const }),
+  withState({ query: '', order: 'asc' as 'asc' | 'desc' }),   // not `as const` — that locks it to 'asc'
   withStorageSync<{ query: string; order: 'asc' | 'desc' }>({ key: 'filter_v1' }),
 );
 ```
@@ -166,14 +168,15 @@ export const FilterStore = signalStore(
 If TypeScript errors when composing multiple input-requiring features, add an unused generic:
 `function withStorageSync<State extends object, _>(...)`.
 
-## 5. Signal Store — `@angular-architects/ngrx-toolkit` (library)
+## 5. Signal Store — `@ngrx-toolkit/core` (library)
 
 Recommended for production Signal Store persistence — SSR-safe out of the box (no manual
-`isPlatformBrowser`), supports `select`/`autoSync`, and offers session/IndexedDB backends. Match
-the major to Angular (Angular 21 → `@angular-architects/ngrx-toolkit@21.x`).
+`isPlatformBrowser`), supports `select`/`autoSync`, and offers session/IndexedDB backends. The
+package **moved to `@ngrx-toolkit/core`** (Sept 2026); `@angular-architects/ngrx-toolkit@22` still
+installs but is deprecated — use the new name. Its major tracks NgRx (`22.x` → `@ngrx/signals` ^22).
 
 ```ts
-import { withStorageSync, withSessionStorage } from '@angular-architects/ngrx-toolkit';
+import { withStorageSync, withSessionStorage } from '@ngrx-toolkit/core';
 
 signalStore(withState({ theme: 'light' }), withStorageSync('prefs'));                   // localStorage
 signalStore(withState({ theme: 'light' }), withStorageSync('prefs', withSessionStorage()));
@@ -182,8 +185,9 @@ signalStore(withState({ cart: [] }), withStorageSync({ key: 'cart', select: (s) 
 
 Options: `key`, `autoSync` (default true), `select`, `stringify`/`parse`. Exposes
 `readFromStorage()` / `writeToStorage()` / `clearStorage()` / `whenSynced()`. The same package's
-`withDevtools('name')` gives Signal Stores a Redux DevTools tab (swap to `withDevtoolsStub` in prod
-via `angular.json` file replacements).
+`withDevtools('name')` gives Signal Stores a Redux DevTools tab; it is not stripped from prod
+builds automatically — swap it for `withDevToolsStub` (exact export name — capital **T**) via an
+environment file + `angular.json` file replacements.
 
 ## 6. Choosing an approach
 
@@ -192,7 +196,7 @@ via `angular.json` file replacements).
 | Classic Store, 1–2 slices, simple | hand-rolled meta-reducer (§2) |
 | Classic Store, partial slices / encryption / conditional sync | `ngrx-store-localstorage` (§3) |
 | Signal Store, want zero deps / full control (e.g. cross-tab sync) | custom `withStorageSync` feature (§4) |
-| Signal Store, production, want SSR-safe + IndexedDB + DevTools | `@angular-architects/ngrx-toolkit` (§5) |
+| Signal Store, production, want SSR-safe + IndexedDB + DevTools | `@ngrx-toolkit/core` (§5) |
 
 Neither library listens for the `storage` event (cross-tab sync) by default — add a
 `window.addEventListener('storage', ...)` in a custom feature if you need tabs to stay in sync.

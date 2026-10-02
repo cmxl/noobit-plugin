@@ -31,14 +31,34 @@ that first; nothing here overrides it. Reverse proxy, TLS, and Let's Encrypt: se
   source file then invalidates only the publish/build layers, not restore/`npm ci`.
 - Run the .NET publish and Angular build as **independent stages** — BuildKit builds them in
   parallel and rebuilds only the stage whose inputs changed. Node is only ever a *build* stage
-  (node 22+); the runtime image never contains node.
+  (`node:24-slim` — 24 is the Active LTS line); the runtime image never contains node. `-slim`
+  holds only what's needed to run node, which covers `npm ci` + the Angular build; switch to the
+  full `node:24` image (based on `buildpack-deps`, compiler toolchain included) only if a
+  dependency compiles native addons.
+- **Cross-architecture builds** (Dockerfile reference: automatic platform ARGs; dotnet-docker
+  "build for a platform" doc): Docker builds for the host's native architecture by default, so an
+  arm64 dev machine produces arm64 images that fail on amd64 servers. Put
+  `FROM --platform=$BUILDPLATFORM` on the SDK and node stages, declare `ARG TARGETARCH` in the SDK
+  stage, and pass `-a $TARGETARCH` to both `dotnet restore` and `dotnet publish`. Don't add
+  `--no-restore` to publish: the packages live only in the cache mount, which CI layer caches
+  (`--cache-from type=registry|gha`) never export — a fresh runner then reuses the cached restore
+  layer with an empty package folder and publish fails (NETSDK1064). Publish's own restore is a fast
+  no-op when the packages are there. Only the final `aspnet` stage follows the
+  target platform; select it with `docker build --platform linux/amd64` or the compose service's
+  `platform: linux/amd64`.
 - Always combine `apt-get update` with `apt-get install` in the **same `RUN`** and clean up in the
   same layer (`rm -rf /var/lib/apt/lists/*`); a lone `apt-get update` layer gets cached stale.
   Add `--no-install-recommends`; do not install packages "because they might be nice to have".
 - Keep a `.dockerignore` (`**/bin`, `**/obj`, `node_modules`, `.git`, `dist`) — smaller context,
   fewer spurious cache busts.
 - Prefer `COPY` over `ADD`. For reproducible/supply-chain-safe builds, pin base images by digest
-  (`aspnet:10.0@sha256:...`); at minimum pin the major.minor tag, never `latest`.
+  (`aspnet:10.0@sha256:...`); at minimum pin each image's compatibility line, never `latest`:
+  - .NET: major.minor (`aspnet:10.0`) — that *is* the .NET release; patches roll in.
+  - Postgres: major (`postgres:18`) — minor releases are bugfix/security-only and need no
+    dump/restore; a major bump does (SKILL.md).
+  - Node: major (`node:24-slim`) — one LTS line, build stage only.
+  - Redis: major (`redis:8`) is acceptable because the cache is reconstructible; pin major.minor
+    (`redis:8.x`) if feature releases should land only on purpose.
 - Cache mounts (`RUN --mount=type=cache,...` for NuGet/npm) are the default pattern here, not a
   CI-only extra — see the dedicated section below.
 
@@ -89,6 +109,12 @@ must exist there. Options, in order of preference for this stack:
   network at runtime; image pulls and builds happen on the host and are unaffected).
 - `restart: unless-stopped` (or `always`) on every long-running service — Compose's documented
   mechanism for surviving crashes and reboots; there is no supervisor otherwise.
+- **Log rotation** (Docker logging docs): the default `json-file` driver performs no rotation, so
+  long-running containers fill the disk. Set `logging: { driver: local }` per service — it rotates
+  by default (`max-size` 20m × `max-file` 5, compressed) and uses a more efficient format. Keep
+  `json-file` only if a log shipper reads its files, and then cap it:
+  `logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }`. Host-wide
+  alternative: `log-driver`/`log-opts` in the daemon's `daemon.json`.
 - **Resource limits** work with plain `docker compose up` via
   `deploy.resources.limits: { cpus: "1.0", memory: 512M }` (+ `reservations`, `pids`). Cap the app
   and DB so one runaway container can't OOM the host.
@@ -98,8 +124,9 @@ must exist there. Options, in order of preference for this stack:
   `compose.dev.yaml` for dev (bind mounts, exposed ports), selected via `COMPOSE_FILE` in the
   developer's local `.env` (Compose reads `COMPOSE_FILE` from `.env` — pre-defined environment
   variables docs); plain base in prod. Docker's guidance: remove code bind-mounts in production, adjust
-  restart policy and log verbosity. Redeploy one service without bouncing its deps:
-  `docker compose build app && docker compose up --no-deps -d app`.
+  restart policy and log verbosity. Redeploy one service without recreating its deps:
+  `docker compose build app && docker compose up --no-deps -d app` — `app` itself still restarts
+  (brief downtime for it alone).
 
 ### Cache mounts in depth (Docker build cache docs)
 
@@ -129,9 +156,14 @@ must exist there. Options, in order of preference for this stack:
 
 - Under central package management, version bumps touch only `Directory.Packages.props` — copied
   in the first COPY — so the per-project csproj COPY list changes only when a project is added,
-  removed, or gains a reference. Maintaining explicit `COPY src/X/X.csproj src/X/` lines is
-  therefore cheap and stays the default; a glob like `COPY src/**/*.csproj` does NOT preserve the
-  directory structure and silently breaks restore.
+  removed, or gains a reference. A plain glob like `COPY src/**/*.csproj ./` does NOT preserve the
+  directory structure (every csproj lands flat in one folder) and silently breaks restore.
+- **`COPY --parents` removes the list** (Dockerfile reference; Dockerfile syntax 1.20+, which
+  `# syntax=docker/dockerfile:1` resolves to): it keeps each source's parent directories, so
+  `COPY --parents src/*/*.csproj ./` (or `src/**/*.csproj` for nested layouts) recreates
+  `src/X/X.csproj` for every project in one line. Same restore-layer caching as explicit lines —
+  the layer invalidates only when a csproj changes. Prefer it once a solution has more than a
+  couple of projects; explicit `COPY src/X/X.csproj src/X/` lines stay fine for one or two.
 - Alternative that needs no csproj COPY list at all: restore from a bind mount —
   `RUN --mount=type=bind,source=.,target=/ctx,rw --mount=type=cache,id=nuget,target=/root/.nuget/packages dotnet restore /ctx/App.sln`.
   RUN bind mounts are read-only by default, and `dotnet restore` writes `obj/project.assets.json`
@@ -141,9 +173,8 @@ must exist there. Options, in order of preference for this stack:
   pattern's real value is warming the NuGet cache mount — with it in place, the re-restore that
   `dotnet publish` triggers later takes seconds instead of re-downloading packages. This step still
   effectively re-runs whenever anything in the mounted context changes, but that re-run is now a
-  fast no-op restore. Prefer it when the csproj list is large and churns; prefer the explicit COPY
-  list when the context is small and stable, so unrelated file edits don't re-trigger the restore
-  step at all.
+  fast no-op restore. `COPY --parents` is usually the better trade: no list to maintain, and
+  unrelated file edits don't re-trigger the restore step at all.
 
 ### Trimming, ReadyToRun, NativeAOT — image size vs startup vs risk (.NET deployment docs)
 
@@ -193,7 +224,9 @@ must exist there. Options, in order of preference for this stack:
 | `HEALTHCHECK` with wget/curl on chiseled images | No shell, no binary → unhealthy forever | Full image + install wget, or external probing, or a copied-in probe binary |
 | Assuming .NET 10 images are Debian | `10.0` is Ubuntu Noble now | Fine for `apt-get`, but don't reference Debian codenames in tags |
 | No `--start-period` on app healthchecks | EF migrations/startup marked unhealthy → restart loops | Set `--start-period` beyond worst-case cold start |
-| `docker compose up` after every change rebuilding everything | Downtime for unrelated services | `docker compose build app && docker compose up --no-deps -d app` |
+| `docker compose up` after every change rebuilding everything | Rebuilds every `build:` service; recreates changed deps | `docker compose build app && docker compose up --no-deps -d app` |
+| Default `json-file` logging without options | No rotation → disk fills | `logging: { driver: local }` or `json-file` with `max-size`/`max-file` |
+| Build stages without `--platform=$BUILDPLATFORM` | arm64 dev box ships arm64 images to amd64 servers | `FROM --platform=$BUILDPLATFORM` + `-a $TARGETARCH` |
 
 ## Sources
 
@@ -208,6 +241,14 @@ must exist there. Options, in order of preference for this stack:
 - https://docs.docker.com/reference/dockerfile/#run---mounttypecache
 - https://docs.docker.com/reference/dockerfile/#run---mounttypebind
 - https://docs.docker.com/reference/dockerfile/#copy---link
+- https://docs.docker.com/reference/dockerfile/#copy---parents
+- https://docs.docker.com/reference/dockerfile/#automatic-platform-args-in-the-global-scope
+- https://docs.docker.com/engine/logging/configure/
+- https://docs.docker.com/engine/logging/drivers/local/
+- https://github.com/dotnet/dotnet-docker/blob/main/samples/build-for-a-platform.md
+- https://hub.docker.com/_/node
+- https://nodejs.org/en/about/previous-releases
+- https://www.postgresql.org/support/versioning/
 - https://github.com/dotnet/dotnet-docker/blob/main/README.aspnet.md
 - https://github.com/dotnet/dotnet-docker/blob/main/documentation/image-variants.md
 - https://github.com/dotnet/dotnet-docker/blob/main/documentation/distroless.md

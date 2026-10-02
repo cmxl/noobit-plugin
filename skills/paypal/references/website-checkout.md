@@ -11,7 +11,7 @@ https://developer.paypal.com/sdk/js/v5/best-practices (CSP) and the sample repos
 | **New integration** | **JS SDK v6** — PayPal's recommendation ("For a faster, more secure integration, use the latest JavaScript SDK v6") |
 | Existing v5 integration (`paypal.com/sdk/js?client-id=…`, `paypal.Buttons(...)`) | Keep running — PayPal labels v5 "deprecated" in the migration guide while the integration pages say it "remains supported"; no sunset date found. Plan migration with https://developer.paypal.com/v5-v6 |
 | React | `@paypal/react-paypal-js` → import from `@paypal/react-paypal-js/sdk-v6` (`PayPalProvider`, `usePayPalOneTimePaymentSession`, `usePayPalCardFields`) |
-| Bundler / SPA without React | `@paypal/paypal-js` → `loadCoreSdkScript({ environment: "sandbox" | "production" })` from `@paypal/paypal-js/sdk-v6` (`loadScript` is the v5 loader) |
+| Angular, other bundler / SPA without React | `@paypal/paypal-js` → `loadCoreSdkScript({ environment: "sandbox" | "production" })` from `@paypal/paypal-js/sdk-v6` (`loadScript` is the v5 loader) — Angular service + component below |
 
 `/sdk/js/reference` is now the v6 reference; the v5 SDK pages live under `/sdk/js/v5/` (reference, configuration, best practices incl. CSP) and some v5 guides under `/v5/`.
 Official v6 sample (client + Node server): https://github.com/paypal-examples/v6-web-sdk-sample-integration.
@@ -79,8 +79,8 @@ function createOrder() {
     .then((data) => ({ orderId: data.id }));                    // v6 requires { orderId }
 }
 
-// Plain-JS pages only. In Angular, call createOrder/capture through an HttpClient-based service or store
-// method with relative /api/... URLs — HttpClient adds X-XSRF-TOKEN itself; don't copy these helpers.
+// Plain-JS pages only. In Angular use the HttpClient-based service below (relative /api/... URLs —
+// HttpClient adds X-XSRF-TOKEN itself); don't copy these helpers.
 // Your app's normal API helper: same-origin cookies + your antiforgery header
 // (here the common XSRF-TOKEN cookie → X-XSRF-TOKEN header convention).
 async function postJson(url, body) {
@@ -118,6 +118,98 @@ async function getJson(url) {
   `googlepay-payments`, `applepay-payments` (needs the Apple domain-association file), `fastlane`.
   Look up the reference before using any of them.
 
+## Angular (v6 via `@paypal/paypal-js`)
+
+Same flow, no `<script>` tag: `loadCoreSdkScript` injects the SDK (it resolves `null` on the server) and
+`afterNextRender` keeps all SDK work in the browser — render callbacks never run during SSR or
+prerendering. Types come from `@paypal/paypal-js/sdk-v6`.
+
+```typescript
+// paypal-checkout.ts — npm i @paypal/paypal-js
+import { HttpClient } from "@angular/common/http";
+import { Injectable, inject } from "@angular/core";
+import { loadCoreSdkScript, type OneTimePaymentSession } from "@paypal/paypal-js/sdk-v6";
+import { firstValueFrom } from "rxjs";
+
+export type CaptureResult = { status: string };   // whatever your capture endpoint returns
+type ClientConfig = { clientId: string; environment: "sandbox" | "production" };
+
+@Injectable({ providedIn: "root" })
+export class PayPalCheckout {
+  private readonly http = inject(HttpClient);   // relative /api URLs: the XSRF interceptor adds X-XSRF-TOKEN
+
+  /** Browser only (call from afterNextRender). null = SDK not loadable or PayPal not eligible. */
+  async createSession(onCaptured: (result: CaptureResult) => void,
+                      onError: (error: unknown) => void): Promise<OneTimePaymentSession | null> {
+    const { clientId, environment } = await firstValueFrom(this.http.get<ClientConfig>("/api/paypal/client-id"));
+    const paypal = await loadCoreSdkScript({ environment });          // resolves null on the server
+    if (!paypal) return null;
+
+    const sdk = await paypal.createInstance({ clientId, components: ["paypal-payments"], pageType: "checkout" });
+    const methods = await sdk.findEligibleMethods({ currencyCode: "EUR" });
+    if (!methods.isEligible("paypal")) return null;
+
+    return sdk.createPayPalOneTimePaymentSession({
+      onApprove: async ({ orderId }) => onCaptured(await firstValueFrom(      // the server's verdict, not the SDK's
+        this.http.post<CaptureResult>(`/api/paypal/orders/${encodeURIComponent(orderId)}/capture`, null))),
+      onError,
+    });
+  }
+
+  /** Returns the promise on purpose: hand it to session.start() WITHOUT awaiting it first. */
+  createOrder(checkoutId: string): Promise<{ orderId: string }> {
+    return firstValueFrom(this.http.post<{ id: string }>("/api/paypal/orders", { checkoutId }))   // an id only — never amounts
+      .then(({ id }) => ({ orderId: id }));
+  }
+}
+```
+
+```typescript
+// paypal-button.ts
+import { CUSTOM_ELEMENTS_SCHEMA, Component, afterNextRender, inject, input, signal } from "@angular/core";
+import type { OneTimePaymentSession } from "@paypal/paypal-js/sdk-v6";
+import { type CaptureResult, PayPalCheckout } from "./paypal-checkout";
+
+@Component({
+  selector: "app-paypal-button",
+  schemas: [CUSTOM_ELEMENTS_SCHEMA],                    // <paypal-button> is PayPal's web component
+  template: `
+    @if (ready()) { <paypal-button (click)="pay()"></paypal-button> }
+    @if (result(); as r) { <p>Payment: {{ r.status }}</p> }
+    @if (failed()) { <p>PayPal failed — please choose another payment method.</p> }
+  `,
+})
+export class PayPalButton {
+  readonly checkoutId = input.required<string>();
+  private readonly checkout = inject(PayPalCheckout);
+  private session: OneTimePaymentSession | null = null;
+  protected readonly ready = signal(false);
+  protected readonly result = signal<CaptureResult | null>(null);
+  protected readonly failed = signal(false);
+
+  constructor() {
+    // render callbacks never run during SSR or prerendering — no window/document access on the server
+    afterNextRender(() => {
+      this.checkout.createSession((r) => this.result.set(r), () => this.failed.set(true))
+        .then((s) => { this.session = s; this.ready.set(s !== null); })
+        .catch(() => this.failed.set(true));
+    });
+  }
+
+  protected pay(): void {
+    // no await before start(): keeps the click's transient activation for the popup
+    void this.session?.start({ presentationMode: "auto" }, this.checkout.createOrder(this.checkoutId()));
+  }
+}
+```
+
+- `afterNextRender` is stable since Angular 20 (https://angular.dev/api/core/afterNextRender).
+- Update **signals** from SDK callbacks — a signal write schedules change detection, with or without zone.js.
+- `/api/paypal/client-id` returns `{ clientId, environment }` (server endpoint below) — one setting
+  drives the SDK environment, client id and API base URL.
+- Session state that more than this button needs (paid status, checkout id) belongs in the checkout
+  store (`noobit:angular-ngrx-state`), not in the component.
+
 ## Server endpoints (ASP.NET Core)
 
 ```csharp
@@ -125,7 +217,9 @@ async function getJson(url) {
 // app.MapGroup("/api/paypal") would be a sibling and silently skip CSRF validation.
 var paypal = api.MapGroup("/paypal");
 
-paypal.MapGet("/client-id", (IOptions<PayPalOptions> o) => Results.Ok(new ClientIdResponse(o.Value.ClientId)));
+// public values; "environment" picks the SDK host in the Angular loader
+paypal.MapGet("/client-id", (IOptions<PayPalOptions> o) => Results.Ok(
+    new ClientIdResponse(o.Value.ClientId, o.Value.Environment == "live" ? "production" : "sandbox")));
 
 paypal.MapPost("/orders", async (CreatePayPalOrderRequest req, ICheckoutService checkouts, IPayPalClient client,
                                  IPayPalOrderStore store, CancellationToken ct) =>
@@ -154,9 +248,16 @@ paypal.MapPost("/orders/{orderId}/capture", async (string orderId, IPayPalOrderS
     var mapping = await store.FindForCurrentUserAsync(orderId, ct);         // reject foreign/unknown order ids
     if (mapping is null) return Results.NotFound();
 
-    var capture = await client.CaptureOrderAsync(orderId, requestId: $"capture:{orderId}", ct);
-    // ORDER_ALREADY_CAPTURED (webhook path won the race) → GET the order and use its capture — see orders-payments.md
-    var outcome = await booking.BookAsync(mapping, capture, ct);             // same forward-only routine as the webhook processor
+    PayPalOrder order;
+    try
+    {
+        order = await client.CaptureOrderAsync(orderId, requestId: $"capture:{orderId}", ct);
+    }
+    catch (PayPalApiException ex) when (ex.HasIssue("ORDER_ALREADY_CAPTURED"))
+    {
+        order = await client.GetOrderAsync(orderId, ct);                    // webhook path won the race
+    }
+    var outcome = await booking.BookAsync(mapping, order, ct);               // same forward-only routine as the webhook processor
     return Results.Ok(new CaptureResponse(outcome.Status));                  // COMPLETED / PENDING / DECLINED → UI message
 });
 
@@ -170,9 +271,10 @@ static decimal RoundForPayPal(decimal value, string currency)
 }
 ```
 
-Request/response types are plain records (`CreateOrderBody`, `PurchaseUnit`, `Money`, …) registered in
-your source-generated `JsonSerializerContext` with snake_case naming — no anonymous types, so the code
-works with reflection-free JSON.
+`IPayPalClient`, `PayPalApiException` and the request/response records (`CreateOrderBody`,
+`PurchaseUnit`, `Money`, …) are sketched in [orders-payments.md](orders-payments.md#typed-client-sketch-ipaypalclient) —
+plain records in a source-generated `JsonSerializerContext` with snake_case naming, no anonymous types,
+so the code works with reflection-free JSON.
 
 - The browser sends **only** a checkout id; the server prices it. The official samples do the same
   (SKU + quantity in, server-side catalogue prices). Freeze the checkout before creating the order —

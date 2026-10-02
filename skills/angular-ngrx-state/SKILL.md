@@ -1,17 +1,12 @@
 ---
 name: angular-ngrx-state
 description: >-
-  Modern NgRx state management for Angular v20+ applications. Default to the Signal Store
-  (@ngrx/signals); reach for the classic global Store (createActionGroup / createFeature /
-  functional effects / selectors) only for genuinely app-wide shared state. Covers store
-  structure, computed/selectors, side effects (rxMethod / functional effects), entity
-  management, browser-storage hydration (persist & rehydrate to local/sessionStorage), and
-  testing. Use this skill WHENEVER working with state in an Angular app — creating or
-  refactoring a store, component/service state, actions, reducers, effects, selectors, or a
-  facade; deciding "where should this state live"; persisting or rehydrating state across
-  reloads; or when the user mentions NgRx, Signal Store, signalStore, signalState,
-  @ngrx/signals, state management, or wiring up data flow — even if they don't say "NgRx"
-  explicitly.
+  Use when creating or refactoring NgRx state in an Angular app — a Signal Store (@ngrx/signals,
+  signalStore, signalState, rxMethod, entities) or the classic Store (@ngrx/store, @ngrx/effects:
+  actions, reducers, effects, selectors, facades); deciding "where should this state live";
+  persisting or rehydrating state across reloads (localStorage/sessionStorage); testing stores; or
+  when the user mentions NgRx, Signal Store or state management.
+  Plain signal()/computed()/linkedSignal()/resource() without a store belong to the Angular skills.
 ---
 
 # Modern NgRx state management (Angular v20+)
@@ -22,8 +17,14 @@ plumbing, cleans up with the component that provides it, and now covers the full
 local component state to global app state. Reach for the **classic global Store** only when the
 state genuinely earns it (see the decision guide).
 
-Everything here targets **NgRx 21 / Angular 20+** and the **functional, standalone** style. The
+Everything here targets **NgRx 22 / Angular 22** (NgRx 22 needs Angular 22 + TypeScript 6.0) and
+the **functional, standalone** style; the patterns also hold for NgRx 20/21 on Angular 20/21. The
 older NgModule / class-based-effects / `StoreModule.forRoot` style is legacy — don't reproduce it.
+Upgrade with `ng update @ngrx/store@<v> @ngrx/signals@<v>` (runs the migration schematics) after
+reading `ngrx.io/guide/migration/v<N>` — never by hand-bumping `package.json`.
+
+**Boundary:** plain `signal()` / `computed()` / `linkedSignal()` / `resource()` / `httpResource()`
+inside a component belong to the Angular skills. This skill starts when that state gets a store.
 
 ## Pick the right tool first
 
@@ -49,7 +50,7 @@ put component-specific derived values in a shared/global store — keep those lo
   `references/hydration.md`.
 
 Read the relevant reference file before generating non-trivial code — the APIs move fast and the
-details there are verified against the v21 docs.
+details there are verified against NgRx 22.0.1 (September 2026).
 
 ## Non-negotiable modern idioms
 
@@ -70,20 +71,21 @@ looks like it was copied from a 2021 tutorial.
 - **One store per file**, co-located with its feature. Don't split one logical store across many
   interdependent custom features just for the sake of it.
 
-## Traps the official docs still get wrong
+## Common traps
 
-Call these out because copying from ngrx.io or old blog posts will bite you:
+Call these out because copying from old blog posts or pre-v18 code will bite you:
 
 - **`concatLatestFrom` imports from `@ngrx/operators`, not `@ngrx/effects`** (moved in v18). Same
   for `tapResponse` / `mapResponse`. These live in the separate **`@ngrx/operators`** package —
   install it (`pnpm add @ngrx/operators` / `npm i @ngrx/operators`) if it isn't already in the
-  project; it does not ship with `@ngrx/effects`.
+  project; it does not ship with `@ngrx/effects`. Since v22 only the object form
+  `tapResponse({ next, error })` exists — the positional `(next, error)` form was removed.
 - **Don't use "selectors with props"** — deprecated, removed in v23. Use factory selectors,
   view-model (dictionary) selectors, or `selectSignal`.
-- **`rxMethod` / `signalMethod` called with a signal or observable must run in an injection
-  context** (constructor / field initializer) or be passed an explicit `{ injector }`. Calling
-  them elsewhere without an injector is deprecated and will throw — and leaks when a root-scoped
-  method outlives a component.
+- **`rxMethod` / `signalMethod` called with a signal or observable belong in an injection
+  context** (constructor / field initializer) or get an explicit `{ injector }`. Elsewhere they
+  currently fall back to the store's injector and log a dev-mode deprecation warning ("in a future
+  version, this will throw") — and a root store's watcher then outlives the calling component.
 - **No giant "view-model" computed.** One focused `computed` per concern, so memoization actually
   works.
 - **`createFeature` can't be used with optional (`?`) state properties.** Model them as
@@ -113,7 +115,7 @@ books/
 ├── book-list-page.actions.ts   # page/UI events
 ├── books-api.actions.ts        # API result events
 ├── books.reducer.ts            # createFeature(...) -> reducer + auto selectors
-├── books.effects.ts            # functional effects, xxx$ names
+├── books.effects.ts            # functional effects, named for what they do (loadBooks)
 └── books.selectors.ts          # extra/derived selectors (or fold into createFeature)
 ```
 
@@ -131,3 +133,20 @@ nx build <app> && nx test <project>      # runner is often Vitest or Jest
 Don't claim the store "works" without running these. See the testing sections in the reference
 files for the store-specific patterns (`TestBed` + `unprotected` for Signal Store; `.projector`
 and plain function calls for classic reducers/selectors/functional effects).
+
+Lint with **`@ngrx/eslint-plugin`** (`ng add @ngrx/eslint-plugin`; v22 supports flat config /
+ESLint 9+ only). Its `signals`, `store`, `effects` and `operators` configs catch most of the traps
+above (e.g. `prefer-protected-state`, `prefer-concat-latest-from`, `on-function-explicit-return-type`,
+`signal-store-feature-should-use-generic-type`).
+
+## Official docs — verify, don't guess
+
+When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official
+docs instead of guessing (ngrx.io is a SPA — if a fetch returns only the landing page, read the
+Markdown source under `github.com/ngrx/platform/tree/main/projects/www/src/app/pages/guide/`):
+- Signal Store / `@ngrx/signals`: https://ngrx.io/guide/signals
+- Store: https://ngrx.io/guide/store · Effects: https://ngrx.io/guide/effects · Operators: https://ngrx.io/guide/operators
+- Migration guides (breaking changes per major): https://ngrx.io/guide/migration/v22
+- ESLint plugin rules: https://ngrx.io/guide/eslint-plugin
+- Changelog: https://github.com/ngrx/platform/blob/main/CHANGELOG.md
+- NgRx Toolkit (`@ngrx-toolkit/core` — storage sync, DevTools, `withResource`): https://ngrx-toolkit.angulararchitects.io/

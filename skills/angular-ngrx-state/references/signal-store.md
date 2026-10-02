@@ -1,14 +1,15 @@
 # Signal Store (`@ngrx/signals`) — patterns reference
 
-Verified against the NgRx v21 docs (Angular v20+). Package entry points: `@ngrx/signals`,
+Verified against NgRx 22.0.1 (Angular 22). Package entry points: `@ngrx/signals`,
 `@ngrx/signals/entities`, `@ngrx/signals/rxjs-interop`, `@ngrx/signals/events`,
-`@ngrx/signals/testing`; plus `@ngrx/operators` for `tapResponse` / `mapResponse`.
+`@ngrx/signals/resource` (experimental), `@ngrx/signals/testing`; plus `@ngrx/operators` for
+`tapResponse` / `mapResponse`.
 
 ## Contents
 1. Core building blocks
 2. Providing & scoping (root vs local)
 3. Computed / derived state
-4. Methods & side effects (`rxMethod`, `signalMethod`, async)
+4. Methods & side effects (`rxMethod`, `signalMethod`, async, resources)
 5. Entity management
 6. Custom store features (`signalStoreFeature`)
 7. Private members, `withProps`, exposing the store type
@@ -64,7 +65,9 @@ export const BookSearchStore = signalStore(
 ```
 
 Each state slice becomes a `Signal`; nested objects become a `DeepSignal` with a child signal per
-property (`store.filter()`, `store.filter.query()`), created lazily on first access.
+property (`store.filter()`, `store.filter.query()`), created lazily on first access. Since v22 a
+union slice containing an object literal (`user: User | null`) is typed
+`DeepSignal<User> | Signal<null>` — generic custom features see `DeepSignalOf<T>`.
 
 `withState` also accepts a **factory** run in the injection context, so it can `inject()` — handy
 for seeding from a token: `withState(() => inject(BOOK_SEARCH_STATE))`.
@@ -98,8 +101,7 @@ only disable it (`signalStore({ protectedState: false }, ...)`) as a last resort
 - **Local (default choice for feature/component state):** add to a component or route
   `providers: [BookSearchStore]`. Lifecycle is tied to that component/route — created on entry,
   destroyed on leave (its `onDestroy` hook, `rxMethod` subscriptions, and `takeUntilDestroyed`
-  all clean up automatically). This is also the SSR-safe default, since it's rebuilt per
-  navigation rather than shared.
+  all clean up automatically).
 
   ```ts
   @Component({ providers: [BookSearchStore], /* ... */ })
@@ -131,7 +133,7 @@ must track/reset relative to another.
 
 ## 4. Methods & side effects
 
-Three tools, in rough order of reach:
+Four tools, in rough order of reach:
 
 1. **Async methods** — for simple one-shot loads (see `loadAll` above). Fine when there's no
    race condition to manage.
@@ -174,13 +176,43 @@ Three tools, in rough order of reach:
    ```
 
    **Injection-context rule:** calling `rxMethod`/`signalMethod` with a signal/observable outside an
-   injection context without an explicit `{ injector }` is deprecated and will throw. When calling a
-   root store's method from a component `ngOnInit`, pass the component's injector.
+   injection context without an explicit `{ injector }` is deprecated: today it logs a dev-mode
+   warning and falls back to the store's injector (so a root store keeps watching after the
+   component is gone); a future version will throw. When calling a root store's method from a
+   component `ngOnInit`, pass `{ injector: this.injector }` (`injector = inject(Injector)`).
 
 3. **`signalMethod<T>((x) => {...})`** — RxJS-free alternative using an internal `effect`; smaller
    bundle; only tracks the signal(s) you pass in. Prefer `rxMethod` when race conditions or
    multiple synchronous emissions matter (signals are glitch-free, so only the last change
    propagates).
+
+4. **Angular `resource()` / `httpResource()`** — for declarative "fetch whenever this signal
+   changes" reads, create the resource in `withProps` (an injection context) and derive from it.
+   `@ngrx/signals/resource` (experimental, v22) adds `extendResource` to keep the previous value
+   while reloading or return a fallback instead of throwing on error:
+
+   ```ts
+   import { httpResource } from '@angular/common/http';
+   import { extendResource, withPreviousValueOnLoading, withValueOnError } from '@ngrx/signals/resource';
+
+   export const BookDetailStore = signalStore(
+     withState({ bookId: null as number | null }),
+     withProps(({ bookId }) => ({
+       _bookResource: extendResource(
+         httpResource<Book>(() => (bookId() != null ? `/api/books/${bookId()}` : undefined)),
+         withPreviousValueOnLoading(),
+         withValueOnError(undefined),
+       ),
+     })),
+     withComputed(({ _bookResource }) => ({
+       book: () => _bookResource.value(),
+       isLoading: () => _bookResource.isLoading(),
+     })),
+     withMethods((store) => ({ select(bookId: number) { patchState(store, { bookId }); } })),
+   );
+   ```
+
+   Writes (POST/PUT/DELETE) stay in methods/`rxMethod` — resources are for reads.
 
 There is **no separate `Actions` stream** in a Signal Store — side effects live in the store,
 co-located with the state they touch. For decoupled inter-store coordination, see the Events
@@ -257,7 +289,7 @@ export function withSelectedEntity<Entity>() {
     withComputed(({ entityMap, selectedEntityId }) => ({
       selectedEntity: computed(() => {
         const id = selectedEntityId();
-        return id ? entityMap()[id] : null;
+        return id != null ? entityMap()[id] : null;   // not `id ?` — 0 is a valid id
       }),
     })),
   );
@@ -269,7 +301,8 @@ export function withSelectedEntity<Entity>() {
 - **Feature order matters** — a feature can only reference members declared before it (put
   `withMethods` before a `withHooks` that calls those methods).
 - **Known TS gotcha:** combining multiple input-requiring features that declare no generic errors
-  out; add an unused generic — `function withX<_>() {...}`.
+  out; add an unused generic — `function withX<_>() {...}` (lint:
+  `signal-store-feature-should-use-generic-type`).
 
 ## 7. Private members, `withProps`, exposing the type
 
@@ -325,27 +358,44 @@ Principles from the docs: test the **public API only**; don't spy on the store's
 
 ```ts
 import { TestBed } from '@angular/core/testing';
+import { patchState, signalStore, withComputed, withMethods, withState } from '@ngrx/signals';
 import { unprotected } from '@ngrx/signals/testing';
-import { patchState } from '@ngrx/signals';
 
-it('doubles on increment', () => {
-  TestBed.configureTestingModule({ providers: [CounterStore] }); // omit for providedIn:'root'
-  const store = TestBed.inject(CounterStore);
-  store.increment();
-  expect(store.count()).toBe(1);
-  expect(store.doubleCount()).toBe(2);
-});
+const CounterStore = signalStore(               // locally provided (no providedIn)
+  withState({ count: 0 }),
+  withComputed(({ count }) => ({ doubleCount: () => count() * 2 })),
+  withMethods((store) => ({
+    increment() { patchState(store, ({ count }) => ({ count: count + 1 })); },
+  })),
+);
 
-it('can seed protected state', () => {
-  const store = TestBed.inject(CounterStore);
-  patchState(unprotected(store), { count: 5 }); // bypass protection in tests only
-  expect(store.doubleCount()).toBe(10);
+describe('CounterStore', () => {
+  beforeEach(() => TestBed.configureTestingModule({ providers: [CounterStore] })); // omit if providedIn:'root'
+
+  it('doubles on increment', () => {
+    const store = TestBed.inject(CounterStore);
+    store.increment();
+    expect(store.count()).toBe(1);
+    expect(store.doubleCount()).toBe(2);
+  });
+
+  it('can seed protected state', () => {
+    const store = TestBed.inject(CounterStore);
+    patchState(unprotected(store), { count: 5 }); // bypass protection in tests only
+    expect(store.doubleCount()).toBe(10);
+  });
 });
 ```
 
 Mock injected deps with `{ provide: BooksService, useValue: {...} }`. For `rxMethod`/`signalMethod`,
 run in an injection context and await via `await expect.poll(() => store.x()).toBe(...)` or
 `TestBed.tick()`. To test a component, provide a plain object of signals + fns for the store.
+
+**Zoneless (default since Angular 21, also in `TestBed`):** `fakeAsync`/`tick`/`flush` need Zone.js;
+under Vitest they only work with `zone.js/plugins/vitest-patch` in the test polyfills — prefer native
+async and Vitest fake timers. Use `TestBed.tick()` / `await fixture.whenStable()` for effects and
+change detection, `expect.poll` for async results, and `vi.useFakeTimers()` +
+`vi.advanceTimersByTime()` for `debounceTime` in an `rxMethod`.
 
 ## 10. Anti-patterns to avoid
 
@@ -358,7 +408,7 @@ run in an injection context and await via `await expect.poll(() => store.x()).to
 - Referencing a member before the feature that defines it (feature ordering).
 - Cramming many entity collections into one store (prefer one store per entity type).
 - Assuming Redux DevTools "just works" — it doesn't for Signal Store; use
-  `@angular-architects/ngrx-toolkit`'s `withDevtools`.
+  `@ngrx-toolkit/core`'s `withDevtools`.
 
 ## 11. Events plugin (advanced, `@ngrx/signals/events`)
 

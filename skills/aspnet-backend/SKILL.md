@@ -1,6 +1,6 @@
 ---
 name: aspnet-backend
-description: Use when creating or modifying ASP.NET Core / .NET 10+ backend code — projects, endpoints, services, DI, configuration, middleware, hosted services — or when asked about backend performance, project layout, error handling, or API design in C#.
+description: Use when creating or modifying ASP.NET Core / .NET 10+ backend code — projects, endpoints, services, DI, configuration, middleware, hosted services, validation, HttpClient calls — or when asked about backend performance, project layout, error handling, logging/Serilog, retry/resilience/Polly, JSON serialization (System.Text.Json), console/CLI apps (Spectre.Console), mediator/CQRS/MediatR, or API design in C#.
 ---
 
 # ASP.NET Core Backend (.NET 10+)
@@ -71,14 +71,14 @@ When adding a NuGet package: add the `PackageVersion` to `Directory.Packages.pro
 ```csharp
 public static class OrderEndpoints
 {
-    public static IEndpointRouteBuilder MapOrders(this IEndpointRouteBuilder app)
+    public static IEndpointRouteBuilder MapOrderEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/orders")
             .RequireAuthorization()
             .WithTags("Orders");
 
         group.MapGet("/{id:guid}", GetById);
-        group.MapPost("/", Create).AddEndpointFilter<ValidationFilter<CreateOrderRequest>>();
+        group.MapPost("/", Create);   // validated by AddValidation() — see Rules
         return app;
     }
 
@@ -87,22 +87,34 @@ public static class OrderEndpoints
         await service.GetAsync(id, ct) is { } order
             ? TypedResults.Ok(order.ToResponse())
             : TypedResults.NotFound();
+
+    private static async Task<Created<OrderResponse>> Create(
+        CreateOrderRequest request, IOrderService service, CancellationToken ct)
+    {
+        var order = await service.CreateAsync(request, ct);
+        return TypedResults.Created($"/api/orders/{order.Id}", order.ToResponse());
+    }
 }
+
+public sealed record CreateOrderRequest(
+    [Required, StringLength(64)] string CustomerRef,
+    [Range(1, 1000)] int Quantity);
 ```
 
 Rules:
 - `TypedResults` + `Results<...>` unions — never bare `IResult`.
 - Every handler takes and forwards a `CancellationToken`.
-- Validation as endpoint filters (FluentValidation or DataAnnotations) — return `TypedResults.ValidationProblem`.
-- Errors: `AddProblemDetails()` + an `IExceptionHandler` implementation; no try/catch-per-endpoint.
-- OpenAPI via built-in `AddOpenApi()` (Microsoft.AspNetCore.OpenApi).
+- Validation: built-in `builder.Services.AddValidation()` (.NET 10, source-generated) + DataAnnotations / `IValidatableObject` on request types → automatic 400 `ValidationProblem` before the handler runs. Call it in the assembly that declares the endpoints — types it can't discover are silently **not** validated. FluentValidation only for rules DataAnnotations can't express (async/DB lookups), via an endpoint filter (see references).
+- Errors: `AddProblemDetails()` + an `IExceptionHandler` + `app.UseExceptionHandler()` + `app.UseStatusCodePages()`; no try/catch-per-endpoint (handler code in references).
+- OpenAPI via built-in `AddOpenApi()` + `app.MapOpenApi()` (Microsoft.AspNetCore.OpenApi) — without `MapOpenApi` no document is served.
 
 ## Configuration & DI
 
-- Options pattern always: `builder.Services.AddOptions<MailOptions>().BindConfiguration("Mail").ValidateDataAnnotations().ValidateOnStart();`
+- Options pattern always: `builder.Services.AddOptions<MailOptions>().BindConfiguration("Mail").ValidateOnStart();` with DataAnnotations on the options class, validated by the source-generated `[OptionsValidator] public partial class MailOptionsValidator : IValidateOptions<MailOptions>;` registered as `AddSingleton<IValidateOptions<MailOptions>, MailOptionsValidator>()` (reflection-free, AOT-safe). `.ValidateDataAnnotations()` is the reflection-based fallback.
 - Never `IConfiguration["key"]` sprinkled through code.
+- Production `appsettings`: `AllowedHosts` = the real hostname(s) (`;`-separated), never `*`. Kestrel's `MaxRequestBodySize` (default 30,000,000 bytes ≈ 28.6 MB) stays equal to nginx's `client_max_body_size` (`30000000` in `nginx-deploy`) — change both together.
 - `IHttpClientFactory` for all outbound HTTP + `AddStandardResilienceHandler()` (Microsoft.Extensions.Http.Resilience — Polly v8 under the hood).
-- Non-HTTP resilience (external SDKs, RabbitMQ ops, anything flaky): **Polly v8** `ResiliencePipeline` via `AddResiliencePipeline` (Polly.Extensions) — never hand-rolled retry/`Task.Delay` loops, and use the v8 pipeline API, not the legacy v7 `Policy` API. EF's `EnableRetryOnFailure` already covers DB transients — don't double-wrap it in Polly.
+- Non-HTTP resilience (external SDKs, RabbitMQ ops, anything flaky): **Polly v8** `ResiliencePipeline` via `AddResiliencePipeline` (Polly.Extensions) — never hand-rolled retry/`Task.Delay` loops, and use the v8 pipeline API, not the legacy v7 `Policy` API. EF's `EnableRetryOnFailure` already covers DB transients for **EF only** — don't double-wrap it in Polly; standalone Dapper calls need a Polly v8 `ResiliencePipeline` (see `data-access`). For SQL Server, filter retries on `SqlException.Number` (or use `SqlConfigurableRetryFactory`) — `SqlException` doesn't override `DbException.IsTransient`, which is always `false`.
 - Keyed services for multiple implementations: `AddKeyedSingleton<IStore>("redis", ...)`.
 - **Lifetimes**: scoped for anything touching the `DbContext` or per-request state; singleton for stateless services (`IFusionCache`, `NpgsqlDataSource`, options-backed services); transient only for cheap stateless helpers. Never capture a scoped service in a singleton — background services resolve scopes via `IServiceScopeFactory`.
 - **Errors are never swallowed**: an empty `catch` (or catch-and-continue without logging) is a review failure. Log with context and rethrow, handle meaningfully, or let the global `IExceptionHandler` translate it.
@@ -112,8 +124,8 @@ Rules:
 
 ## Performance checklist
 
-- **JSON**: source-generated `JsonSerializerContext` registered via `ConfigureHttpJsonOptions`. No Newtonsoft.
-- **Caching**: FusionCache (see `fusioncache-redis`); `AddOutputCache()` for anonymous GET endpoints.
+- **JSON**: source-generated `JsonSerializerContext` registered via `ConfigureHttpJsonOptions(o => o.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default))` — covers minimal-API bodies only; pass `AppJsonContext.Default.X` to `HttpClient` `GetFromJsonAsync`/`PostAsJsonAsync` and `JsonSerializer` calls yourself. No Newtonsoft.
+- **Caching**: FusionCache (see `fusioncache-redis`); output caching for anonymous GET endpoints = `AddOutputCache()` + `app.UseOutputCache()` (after CORS/AuthN/AuthZ) + `.CacheOutput()` per endpoint — authenticated requests aren't cached by default.
 - **Async**: `async`/`await` all the way; no `.Result`/`.Wait()`/`GetAwaiter().GetResult()`; `ValueTask` on hot interfaces; `IAsyncEnumerable<T>` for streams.
 - **Allocations**: `Span<T>`/`Memory<T>` for parsing, `ArrayPool<T>`/`ObjectPool<T>` in hot loops, `StringBuilder` pooling, avoid LINQ in per-request hot paths.
 - **Server**: Kestrel behind nginx — nginx terminates TLS/HTTP2 and proxies upstream over HTTP/1.1; response compression only at nginx (don't double-compress).
@@ -126,7 +138,8 @@ Rules:
   app.MapHealthChecks("/health/live", new() { Predicate = _ => false }).AllowAnonymous();
   app.MapHealthChecks("/health/ready", new() { Predicate = c => c.Tags.Contains("ready") }).AllowAnonymous();
   ```
-- **Observability**: OpenTelemetry (traces + metrics) with OTLP exporter. **Serilog is the logging framework** (`Serilog.AspNetCore`, Serilog 4.x): two-stage init (bootstrap logger for startup failures, then full config from `appsettings`), `UseSerilogRequestLogging()` for one structured event per request instead of the noisy defaults, JSON console sink in containers. Application code depends on `ILogger<T>` + `LoggerMessage` source-gen only — Serilog is the backend, not an API to code against (no static `Log.` calls in app code).
+- **Rate limiting**: `AddRateLimiter` + `app.UseRateLimiter()` — policies and placement in `bff-security`.
+- **Observability**: OpenTelemetry (traces + metrics) with OTLP exporter; logs reach OTLP through Serilog's `Serilog.Sinks.OpenTelemetry` — **not** `builder.Logging.AddOpenTelemetry()`, which Serilog bypasses (it doesn't forward to other `ILoggerProvider`s by default). **Serilog is the logging framework** (`Serilog.AspNetCore`, Serilog 4.x): two-stage init (bootstrap logger for startup failures, then full config from `appsettings`), `UseSerilogRequestLogging()` for one structured event per request instead of the noisy defaults, JSON console sink in containers. Application code depends on `ILogger<T>` + `LoggerMessage` source-gen only — Serilog is the backend, not an API to code against (no static `Log.` calls in app code).
 
 ## Common mistakes
 
@@ -146,6 +159,7 @@ Rules:
 | Empty `catch` / silently swallowed exception | Log with context + rethrow, or handle meaningfully — silence is a review failure |
 | `$"interpolated {value}"` into `_logger` | Message template with named placeholders — keeps logs structured and cheap |
 | Scoped service captured in a singleton | `IServiceScopeFactory` scope per unit of work |
+| Hand-rolled DataAnnotations validation filter | `builder.Services.AddValidation()` (.NET 10) |
 
 ## Official docs — verify, don't guess
 

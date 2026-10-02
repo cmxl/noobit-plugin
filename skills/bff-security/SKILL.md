@@ -1,6 +1,6 @@
 ---
 name: bff-security
-description: Use when implementing authentication, authorization, login/logout, sessions, cookies, CSRF/XSRF, security headers, or connecting an Angular SPA to an ASP.NET Core API — the standard is a custom cookie BFF with no OIDC provider and no tokens in the browser.
+description: Use when implementing authentication, authorization, login/logout, sessions, cookies, CSRF/XSRF, security headers, CSP/XSS hardening, password hashing, login rate limiting, Data Protection keys, YARP credential forwarding, SignalR/WebSocket auth, or connecting an Angular SPA to an ASP.NET Core API — the standard is a custom cookie BFF with no OIDC provider and no tokens in the browser.
 ---
 
 # BFF Security (Cookie-based, no OIDC)
@@ -23,7 +23,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         o.Cookie.SameSite = SameSiteMode.Strict;   // Lax if external links must land logged-in
         o.ExpireTimeSpan = TimeSpan.FromHours(8);
         o.SlidingExpiration = true;
-        // APIs get status codes, not redirects to a login page:
+        // APIs get status codes, not redirects to a login page (ignored once o.EventsType is set — see below):
         o.Events.OnRedirectToLogin = ctx => { ctx.Response.StatusCode = 401; return Task.CompletedTask; };
         o.Events.OnRedirectToAccessDenied = ctx => { ctx.Response.StatusCode = 403; return Task.CompletedTask; };
     });
@@ -32,7 +32,8 @@ builder.Services.AddAuthorization();
 
 - Password hashing: ASP.NET Core Identity's hasher (PBKDF2) or `Isopoh.Cryptography.Argon2`; never roll your own.
 - Login endpoint: rate-limited, lockout after N failures, uniform error message ("invalid credentials") regardless of which part failed, no user enumeration on registration/reset.
-- Session versioning: stamp a `SecurityStamp` claim and validate in `OnValidatePrincipal` so password change / "log out everywhere" kills existing cookies.
+- .NET 10 returns 401/403 by itself only for endpoints it detects as API (JSON in/out, `TypedResults`, `[ApiController]`, SignalR) — a handler returning `string`/`IResult` still redirects. Also call `.DisableCookieRedirect()` on the `/api` group and on `MapReverseProxy()`.
+- Session versioning: stamp a `SecurityStamp` claim and validate it in a `CookieAuthenticationEvents` subclass registered via `o.EventsType` so password change / "log out everywhere" kills existing cookies. **With `EventsType` set, the handler resolves that class from DI and ignores every `o.Events` lambda** — override `RedirectToLogin`/`RedirectToAccessDenied` in the class too (code in references).
 - **Data protection keys must be persisted and shared across instances** or cookies die on every deploy/scale-out. Default: `PersistKeysToDbContext<T>` in the app database (durable, backed up). **Not** in the cache Redis — it evicts (`allkeys-lru`) and has persistence off (`fusioncache-redis`, `docker`), and losing the key ring logs every user out.
 
 ## CSRF — required because cookies
@@ -40,30 +41,47 @@ builder.Services.AddAuthorization();
 Angular's `HttpClient` sends `X-XSRF-TOKEN` automatically when it can read an `XSRF-TOKEN` cookie (same-origin only):
 
 ```csharp
-builder.Services.AddAntiforgery(o => o.HeaderName = "X-XSRF-TOKEN");
-// After auth middleware — issue the readable cookie:
+builder.Services.AddAntiforgery(o =>
+{
+    o.HeaderName = "X-XSRF-TOKEN";
+    o.Cookie.Name = "__Host-af";                        // default name has no __Host- prefix
+    o.Cookie.SecurePolicy = CookieSecurePolicy.Always;  // default is None
+});
+// Between UseAuthentication and UseAuthorization, so a 401 still carries the cookie.
+// OnStarting: the token is minted for the FINAL HttpContext.User (after login/logout changed it).
+// /api only: GetAndStoreTokens forces Cache-Control: no-cache, no-store on the response — on static
+// bundles or output-cached responses that would kill caching. /api/me (startup) and login/logout cover it.
 app.Use(async (ctx, next) =>
 {
-    var af = ctx.RequestServices.GetRequiredService<IAntiforgery>();
-    var tokens = af.GetAndStoreTokens(ctx);
-    ctx.Response.Cookies.Append("XSRF-TOKEN", tokens.RequestToken!,
-        new CookieOptions { HttpOnly = false, Secure = true, SameSite = SameSiteMode.Strict });
+    if (ctx.Request.Path.StartsWithSegments("/api"))
+    {
+        ctx.Response.OnStarting(() =>
+        {
+            var tokens = ctx.RequestServices.GetRequiredService<IAntiforgery>().GetAndStoreTokens(ctx);
+            ctx.Response.Cookies.Append("XSRF-TOKEN", tokens.RequestToken!,
+                new CookieOptions { HttpOnly = false, Secure = true, SameSite = SameSiteMode.Strict });
+            return Task.CompletedTask;
+        });
+    }
     await next();
 });
 ```
 
-Validate on every state-changing endpoint — and know that the built-in automatic validation does **not** cover you here: `UseAntiforgery()` auto-validates only endpoints with form-binding metadata (`[FromForm]`, `IFormFile`). JSON APIs (everything Angular sends) must validate explicitly — apply an endpoint filter on the `/api` group that calls `IAntiforgery.ValidateRequestAsync(ctx)` for non-GET/HEAD/OPTIONS requests:
+Tokens are bound to the user identity and cached per request: after `SignInAsync` set `http.User = principal` (after `SignOutAsync`, `new ClaimsPrincipal(new ClaimsIdentity())`) so the login/logout response carries a token for the *new* identity — otherwise the next POST fails with 400.
+
+Validate on every state-changing endpoint — and know that the built-in automatic validation does **not** cover you here: `UseAntiforgery()` auto-validates only endpoints with form-binding metadata (`[FromForm]`, `IFormFile`). JSON APIs (everything Angular sends) must validate explicitly — apply an endpoint filter on the `/api` group. Use `IsRequestValidAsync` (skips GET/HEAD/OPTIONS/TRACE, returns `false` on failure); `ValidateRequestAsync` *throws* and surfaces as a 500:
 
 ```csharp
-group.AddEndpointFilter(async (ctx, next) =>
+api.AddEndpointFilter(async (ctx, next) =>
 {
     var http = ctx.HttpContext;
-    if (!HttpMethods.IsGet(http.Request.Method) && !HttpMethods.IsHead(http.Request.Method)
-        && !HttpMethods.IsOptions(http.Request.Method))
-        await http.RequestServices.GetRequiredService<IAntiforgery>().ValidateRequestAsync(http);
+    if (!await http.RequestServices.GetRequiredService<IAntiforgery>().IsRequestValidAsync(http))
+        return TypedResults.Problem("Invalid or missing antiforgery token.", statusCode: StatusCodes.Status400BadRequest);
     return await next(ctx);
 });
 ```
+
+**Endpoint filters never run on `MapReverseProxy()` endpoints** — not even inside a filtered group. Validate in the proxy pipeline instead (references, YARP section). Login is a CSRF target too (login CSRF): keep it inside the validated group.
 
 For genuine exceptions (webhooks), use `DisableAntiforgery()` on that endpoint and protect it another way: HMAC or provider signatures, verified either at ingress or — for payment providers — in a store-first inbox processor behind a body cap and rate limit (see the `paypal` skill).
 
@@ -77,7 +95,7 @@ https://app.example.com/api/gw/... → YARP → downstream services (BFF attache
 
 - No CORS needed when same-origin — **do not** add permissive CORS instead of fixing origin layout.
 - Downstream services live on a private network, never exposed publicly; they trust the BFF via network isolation + service credentials (API key / mTLS), and receive user identity as verified headers from the BFF, not from the client.
-- Angular: `withXsrfConfiguration` defaults are correct; a 401 response triggers redirect to login route via interceptor; never store auth state beyond "who am I" from a `/api/me` endpoint.
+- Angular: `withXsrfConfiguration` defaults are correct; a 401 response triggers redirect to login route via interceptor; never store auth state beyond "who am I" from a `/api/me` endpoint. Call `GET /api/me` at app startup (`provideAppInitializer`) — when nginx serves `index.html`, that call is what first sets `XSRF-TOKEN`, and the login POST needs it.
 
 ## Security headers & middleware order
 
@@ -86,18 +104,25 @@ https://app.example.com/api/gw/... → YARP → downstream services (BFF attache
 builder.Services.AddHsts(o => { o.MaxAge = TimeSpan.FromDays(730); o.IncludeSubDomains = true; });
 // o.Preload = true only as a deliberate opt-in: preload-list removal takes months
 
-app.UseForwardedHeaders();       // nginx in front — X-Forwarded-For/Proto (see nginx-deploy)
-app.UseHsts();                   // non-development only
-// CSP etc. via middleware:
-ctx.Response.Headers.ContentSecurityPolicy =
-    "default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
-ctx.Response.Headers.XContentTypeOptions = "nosniff";
-ctx.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
-app.UseRateLimiter();            // global + stricter policy on /api/auth/*
+app.UseForwardedHeaders();       // needs ForwardedHeadersOptions + KnownIPNetworks — defaults ignore nginx in Docker (nginx-deploy)
+if (!app.Environment.IsDevelopment()) app.UseHsts();
+app.Use(async (ctx, next) =>
+{
+    var h = ctx.Response.Headers;
+    // no script-src/default-src here: Angular's autoCsp <meta> owns script-src (see references)
+    h.ContentSecurityPolicy = "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests";
+    h.XContentTypeOptions = "nosniff";
+    h["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    await next();
+});
 app.UseAuthentication();
+app.UseRateLimiter();            // AFTER authentication — before it, ctx.User is anonymous and identity partitions fall back to IP
+// antiforgery cookie middleware (CSRF section)
 app.UseAuthorization();
-// antiforgery cookie middleware, then endpoints
+// endpoints
 ```
+
+CSP for Angular is not a one-liner: runtime component `<style>` elements need a nonce or `'unsafe-inline'` in `style-src`, and `default-src 'self'` blocks them. Pick the static-hosting (`security.autoCsp`) or per-response-nonce policy from references. If nginx serves `index.html`, set the headers there too — app middleware only covers what the app serves. `AllowedHosts` (appsettings) lists the real hostname(s), never `*`: host filtering is the app's second line against Host-header poisoning behind nginx's catch-all server.
 
 All endpoints `RequireAuthorization()` by default; opt **out** with `AllowAnonymous` (login, health, static) — never the reverse.
 
@@ -106,7 +131,9 @@ All endpoints `RequireAuthorization()` by default; opt **out** with `AllowAnonym
 | Mistake | Fix |
 |---|---|
 | JWT in localStorage/sessionStorage | Cookie BFF — that's the whole point |
-| API returns 302 to login page | 401/403 via cookie events (above) |
+| API returns 302 to login page | 401/403 via cookie events (in the `EventsType` class once you have one) + `DisableCookieRedirect()` |
+| `ValidateRequestAsync` in a filter | Throws → 500; use `IsRequestValidAsync` → 400 |
+| Antiforgery filter assumed to cover `/api/gw/*` | Filters don't run on proxy endpoints; validate in the `MapReverseProxy` pipeline |
 | `SameSite=None` "to make it work" | Fix same-origin layout instead |
 | Antiforgery skipped on "internal" POSTs | Every state-changing browser-facing endpoint validates |
 | Data protection keys in container FS or the cache Redis | `PersistKeysToDbContext<T>`; cookies survive redeploys, evictions and Redis restarts |

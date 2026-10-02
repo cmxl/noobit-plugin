@@ -155,8 +155,15 @@ FROM sys.database_query_store_options;  -- actual != desired means it changed mo
   ("will be removed in a future version").
 - The documented alternative, verbatim intent: minimize locking contention while protecting from dirty reads by
   using **`READ COMMITTED` with `READ_COMMITTED_SNAPSHOT ON` (RCSI)** or **`SNAPSHOT` isolation**. Both use row
-  versioning in tempdb — size tempdb's version store accordingly. `READCOMMITTEDLOCK` hint opts a query back into
-  locking read-committed under RCSI where write-then-read consistency demands it.
+  versioning in tempdb (in the database's persistent version store when ADR is on) — size it accordingly.
+  `READCOMMITTEDLOCK` hint opts a query back into locking read-committed under RCSI where write-then-read
+  consistency demands it.
+- Turning RCSI on: "only the connection executing the `ALTER DATABASE` command is allowed in the database" —
+  use `ALTER DATABASE … SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE` in a maintenance window (it rolls
+  back everyone else's open transactions). Default: ON in Azure SQL Database, OFF in SQL Server and Managed
+  Instance. Behavior change to review first: readers no longer wait for writers, so logic that relied on that
+  wait (read-then-write checks, `SELECT TOP 1 … ` work-queue polling) races — use `UPDLOCK, HOLDLOCK` /
+  `READPAST`, `READCOMMITTEDLOCK`, or a unique constraint.
 
 ### tempdb
 
@@ -185,31 +192,64 @@ The mandatory workflow (row count → `sp_describe_first_result_set` → grouped
   use `CHECKSUM` "only if your application can tolerate an occasional missed change. Otherwise, consider using
   HASHBYTES". Worse, `CHECKSUM` **ignores the nchar/nvarchar dash character** (`N'-'` → collision *guaranteed* for
   strings differing only by dashes; `CHECKSUM(N'1') = CHECKSUM(N'-1')`), trims trailing spaces, and is
-  collation-dependent. Verdict: checksum match = hint only; checksum mismatch = proof of difference.
+  collation-dependent. **`CHECKSUM_AGG` is order-independent and two identical values cancel out** (tested:
+  `CHECKSUM_AGG` over `5,7` equals over `5,7,9,9`) — a result set that gains or loses a *pair* of duplicate
+  rows keeps the same aggregate. Verdict: checksum match = hint only; checksum mismatch = proof of difference.
+  Use `BINARY_CHECKSUM` (byte-exact) rather than `CHECKSUM` (collation-aware) for the first pass.
+- **`CONCAT_WS` is unsafe for row hashing**: it *skips* NULL arguments **and their separator**, so
+  `CONCAT_WS('|','a',NULL,'b')` = `CONCAT_WS('|','a','b',NULL)` = `'a|b'` — identical hashes (tested).
+- **Implicit/default string conversion is lossy** (`CONCAT`, `CONCAT_WS`, `CONVERT` without a style): `datetime`
+  becomes style 0 `Jan  1 2026 10:00AM` (no seconds), `float` style 0 keeps at most 6 digits (`1.0000001` →
+  `1`). Rows that differ in seconds or in the 7th digit hash equal (tested). Use explicit styles:
+  `CONVERT(varchar(30), dt, 126)` for `datetime`/`datetime2`/`datetimeoffset`, `CONVERT(varchar(30), f, 3)` for
+  `float`/`real` (lossless, 2016+), `CONVERT(varchar(max), b, 1)` for `varbinary` (implicit conversion
+  reinterprets the bytes as characters); `decimal`, integers, `datetime2`/`datetimeoffset` defaults and
+  strings convert exactly.
 
 ```sql
--- Cheap first pass (collision-prone), then per-row hash for a real comparison:
-SELECT CHECKSUM_AGG(BINARY_CHECKSUM(*)) FROM (<query>) q;          -- hint only
-SELECT Id, HASHBYTES('SHA2_256', CONCAT_WS('|', Col1, Col2, Col3)) -- NULL-safe delimited concat
-FROM (<query>) q;                                                  -- join old vs new on Id, compare hashes
+-- 1. Cheap first pass (collision-prone, duplicate pairs cancel): hint only
+SELECT CHECKSUM_AGG(BINARY_CHECKSUM(*)) FROM (<query>) q;
+
+-- 2. Per-row hash: sentinel per nullable column, explicit styles, delimiter between every column
+SELECT Id,
+       HASHBYTES('SHA2_256', CONCAT(
+           ISNULL(Name, N'~NULL~'),                                  N'|',
+           ISNULL(CONVERT(nvarchar(30), CreatedAt, 126), N'~NULL~'), N'|',
+           ISNULL(CONVERT(nvarchar(30), Score, 3), N'~NULL~'),       N'|',
+           ISNULL(CONVERT(nvarchar(40), Amount), N'~NULL~'))) AS RowHash
+FROM (<query>) q;   -- run for old and new, FULL OUTER JOIN on Id, report rows where hashes differ or a side is missing
 ```
 
-`CONCAT_WS` treats NULL as empty string — if `NULL` vs `''` must be distinguished, wrap columns with
-`ISNULL(CONVERT(nvarchar(max), Col), N'~NULL~')` before concatenating, and always include a delimiter so
-`('ab','c')` ≠ `('a','bc')`.
+Pick a sentinel that can't occur in the data, keep the delimiter so `('ab','c')` ≠ `('a','bc')`, and still
+run the grouped-count comparison from `../SKILL.md` when `Id` isn't unique.
 
 ## Ready-to-run diagnostics
 
-Top resource consumers from Query Store:
+Top resource consumers from Query Store. `sys.query_store_runtime_stats` has one row per plan × interval ×
+execution type, so aggregate per query and weight the averages by executions (durations are microseconds):
 
 ```sql
-SELECT TOP 10 qt.query_sql_text, rs.avg_duration, rs.avg_logical_io_reads, rs.count_executions
-FROM sys.query_store_query_text qt
-JOIN sys.query_store_query q ON qt.query_text_id = q.query_text_id
-JOIN sys.query_store_plan p ON q.query_id = p.query_id
-JOIN sys.query_store_runtime_stats rs ON p.plan_id = rs.plan_id
-ORDER BY rs.avg_duration DESC;
+SELECT TOP (10) q.query_id,
+       SUM(rs.count_executions) AS executions,
+       SUM(rs.avg_duration * rs.count_executions) / 1000.0 AS total_duration_ms,
+       SUM(rs.avg_duration * rs.count_executions) / NULLIF(SUM(rs.count_executions), 0) / 1000.0 AS avg_duration_ms,
+       SUM(rs.avg_logical_io_reads * rs.count_executions) / NULLIF(SUM(rs.count_executions), 0) AS avg_logical_reads,
+       COUNT(DISTINCT p.plan_id) AS plans,
+       MAX(qt.query_sql_text) AS query_sql_text
+FROM sys.query_store_runtime_stats rs
+JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = rs.runtime_stats_interval_id
+JOIN sys.query_store_plan p ON p.plan_id = rs.plan_id
+JOIN sys.query_store_query q ON q.query_id = p.query_id
+JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
+WHERE i.start_time >= DATEADD(day, -1, SYSDATETIMEOFFSET())
+GROUP BY q.query_id
+ORDER BY total_duration_ms DESC;   -- total = what the server actually spends; switch to avg_duration_ms for "slowest single call"
 ```
+
+Azure SQL Database also has **automatic tuning**: `FORCE_LAST_GOOD_PLAN` (automatic plan correction) is on by
+Azure default and forces the last good Query Store plan on a detected plan-choice regression, verifying and
+reverting itself; on SQL Server 2017+ enable it with `ALTER DATABASE CURRENT SET AUTOMATIC_TUNING (FORCE_LAST_GOOD_PLAN = ON);`.
+Check `sys.dm_db_tuning_recommendations` before forcing plans by hand.
 
 Missing-index suggestions (treat as *hints* — the DMV over-includes columns and ignores overlapping indexes; design per the index rules above, never create verbatim):
 
@@ -224,23 +264,112 @@ WHERE mid.database_id = DB_ID()
 ORDER BY Impact DESC;
 ```
 
-Mass deletes in batches — one giant `DELETE` escalates locks and bloats the log:
+Mass deletes in batches — one giant `DELETE` escalates to a table lock and bloats the log. Keep each batch
+**below 5,000 rows** (the per-statement lock-escalation threshold; Microsoft's own example uses 1,000) and make
+sure the predicate is **indexed** (`CreatedAt` here) — without an index every batch scans the table, which is
+slow and can itself cross the threshold:
 
 ```sql
-WHILE 1 = 1
+DECLARE @cutoff datetime2 = DATEADD(day, -90, SYSUTCDATETIME()), @rows int = 1;
+WHILE @rows > 0
 BEGIN
-    DELETE TOP (10000) FROM Logs WHERE CreatedAt < @cutoff;
-    IF @@ROWCOUNT = 0 BREAK;
-    WAITFOR DELAY '00:00:01';   -- let other work breathe between batches
+    DELETE TOP (2000) FROM dbo.Logs WHERE CreatedAt < @cutoff;   -- each statement autocommits its own batch
+    SET @rows = @@ROWCOUNT;
+    WAITFOR DELAY '00:00:00.200';   -- let other work breathe between batches
 END
 ```
+
+Don't wrap the loop in one transaction (that holds every lock and all the log until the end). Under the
+**FULL** recovery model the log only truncates on **log backups** — run them during a long purge or the log
+still grows; under SIMPLE, checkpoints reclaim it.
+
+### Blocking and deadlock diagnostics
+
+Live blocking chain and the head blocker (run while it's happening; needs `VIEW SERVER STATE`, or
+`VIEW DATABASE STATE` on Azure SQL Database):
+
+```sql
+-- Who waits on whom, and on what
+SELECT r.session_id, r.blocking_session_id, r.wait_type, r.wait_time AS wait_ms, r.wait_resource,
+       DB_NAME(r.database_id) AS db, t.text AS running_sql
+FROM sys.dm_exec_requests r
+CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+WHERE r.blocking_session_id <> 0;
+
+-- Head blockers: block others but are not blocked themselves; often sleeping with an open transaction
+SELECT s.session_id, s.status, s.open_transaction_count, s.login_name, s.host_name, s.program_name,
+       s.last_request_end_time, t.text AS last_sql
+FROM sys.dm_exec_sessions s
+JOIN sys.dm_exec_connections c ON c.session_id = s.session_id
+OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) t
+WHERE s.session_id IN (SELECT blocking_session_id FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
+  AND s.session_id NOT IN (SELECT session_id FROM sys.dm_exec_requests WHERE blocking_session_id <> 0);
+
+-- What a session holds / waits for
+SELECT resource_type, resource_description, request_mode, request_status,
+       CASE WHEN l.resource_type = 'OBJECT' THEN OBJECT_NAME(l.resource_associated_entity_id)
+            ELSE OBJECT_NAME(p.object_id) END AS obj   -- OBJECT locks carry the object_id, not a hobt_id
+FROM sys.dm_tran_locks l
+LEFT JOIN sys.partitions p ON p.hobt_id = l.resource_associated_entity_id
+WHERE l.request_session_id = <head blocker id> AND l.resource_database_id = DB_ID();
+```
+
+A `sleeping` head blocker with `open_transaction_count > 0` is an application bug (transaction not committed
+or disposed, often around an `await` that threw) — fix the code; `KILL` only relieves the symptom.
+
+Deadlock graphs already captured by `system_health` (SQL Server / Managed Instance; the ring buffer holds
+recent events, the `event_file` target keeps more):
+
+```sql
+SELECT x.ev.value('@timestamp', 'datetime2') AS utc_time,
+       x.ev.query('(data/value/deadlock)[1]') AS deadlock_graph   -- save as .xdl to view graphically in SSMS
+FROM (SELECT CAST(st.target_data AS xml) AS target_data
+      FROM sys.dm_xe_session_targets st
+      JOIN sys.dm_xe_sessions s ON s.address = st.event_session_address
+      WHERE s.name = N'system_health' AND st.target_name = N'ring_buffer') d
+CROSS APPLY d.target_data.nodes('RingBufferTarget/event[@name="xml_deadlock_report"]') x(ev)
+ORDER BY utc_time DESC;
+```
+
+Azure SQL Database has no `system_health`: `CREATE EVENT SESSION … ON DATABASE ADD EVENT
+sqlserver.database_xml_deadlock_report ADD TARGET package0.ring_buffer` (or `event_file` to blob storage).
+Read the graph: victim, each process's `inputbuf` and isolation level, and the resource list — the usual fixes
+are touching tables in the same order everywhere, shorter transactions, and an index that turns a scan
+(many locks) into a seek. Optimized locking (default in Azure SQL Database/MI) and RCSI remove most
+reader/writer deadlocks; writer/writer ones remain.
+
+Wait statistics — cumulative since restart, so snapshot twice and diff. Unfiltered, the top of the list is
+background idle waits; exclude them (the list below is a starting point, not exhaustive):
+
+```sql
+SELECT TOP (15) wait_type, waiting_tasks_count, wait_time_ms, signal_wait_time_ms
+FROM sys.dm_os_wait_stats              -- Azure SQL Database: sys.dm_db_wait_stats
+WHERE wait_type NOT LIKE N'SLEEP[_]%' AND wait_type NOT LIKE N'BROKER[_]%' AND wait_type NOT LIKE N'XE[_]%'
+  AND wait_type NOT LIKE N'QDS[_]%' AND wait_type NOT LIKE N'SQLTRACE[_]%' AND wait_type NOT LIKE N'HADR[_]%'
+  AND wait_type NOT IN (N'SOS_WORK_DISPATCHER', N'DISPATCHER_QUEUE_SEMAPHORE', N'LOGMGR_QUEUE',
+      N'DIRTY_PAGE_POLL', N'LAZYWRITER_SLEEP', N'REQUEST_FOR_DEADLOCK_SEARCH', N'SERVER_IDLE_CHECK',
+      N'CHECKPOINT_QUEUE', N'WAITFOR', N'FT_IFTS_SCHEDULER_IDLE_WAIT', N'SP_SERVER_DIAGNOSTICS_SLEEP')
+ORDER BY wait_time_ms DESC;
+```
+
+`LCK_M_*` = blocking, `PAGEIOLATCH_*` = reading from disk (missing index / memory), `CXPACKET`/`CXCONSUMER` =
+parallelism (usually a symptom), `WRITELOG` = log I/O or too many tiny commits, `RESOURCE_SEMAPHORE` = memory-grant
+queueing. Per query: `sys.query_store_wait_stats` (Query Store, 2017+) by `wait_category_desc`.
+
+Lock escalation: verify with the `lock_escalation` XEvent; per table `ALTER TABLE … SET (LOCK_ESCALATION =
+AUTO | TABLE | DISABLE)` exists, but shrinking the statement's lock footprint (batching, seeks instead of
+scans) is the documented first choice — disabling escalation risks lock-memory exhaustion (error 1204).
 
 ## Anti-patterns
 
 - **`NOLOCK` as a go-faster switch** — dirty/double/missed reads and error 601 are documented behavior, not edge
   cases; deprecated on UPDATE/DELETE targets. Use RCSI or SNAPSHOT isolation.
 - **Random-GUID clustered PK** — 16-byte key copied into every nonclustered index, not ever-increasing → page
-  splits. Sequential surrogate key clustered; unique nonclustered on the GUID.
+  splits. Sequential surrogate key clustered; unique nonclustered on the GUID. **UUIDv7 counts as random
+  here**: `uniqueidentifier` comparison treats the *last six bytes* as most significant (documented for
+  `SqlGuid`; tested: `ORDER BY` sorts `03000000-…-000000000001` before `01000000-…-000000000003`), and v7 puts
+  its timestamp in the *first* bytes. `NEWSEQUENTIALID()` (column `DEFAULT` only) and EF Core's default
+  `SequentialGuidValueGenerator` produce SQL-Server-ordered values.
 - **Non-SARGable predicates** — `YEAR(col) = 2026`, `LEFT(col,3) = 'ABC'`, `col + 0`, implicit conversions from
   mismatched parameter types (`nvarchar` param vs `varchar` column): all defeat seeks and wreck estimates.
 - **Local variables in WHERE clauses** — documented CE blind spot (density guess, not histogram); use parameters,
@@ -249,8 +378,12 @@ END
   indexes, and don't weigh write cost. Treat as input to a design, never `CREATE` verbatim.
 - **Wide "just in case" INCLUDE lists** and over-indexing hot OLTP tables — every index taxes every write; docs:
   keep indexes narrow, few columns as possible; prune with `sys.dm_db_index_usage_stats`.
-- **Treating a `CHECKSUM`/`CHECKSUM_AGG` match as equivalence proof** — dash-collision is guaranteed by design;
-  use `HASHBYTES` or the set-based comparison.
+- **Treating a `CHECKSUM`/`CHECKSUM_AGG` match as equivalence proof** — dash-collision is guaranteed by design,
+  duplicate pairs cancel in `CHECKSUM_AGG`; use `HASHBYTES` or the set-based comparison.
+- **Hashing rows via `CONCAT_WS` or default conversions** — NULLs vanish with their separator, `datetime`
+  loses seconds, `float` keeps 6 digits; different rows hash equal. Use the sentinel + explicit-style recipe.
+- **Equality joins in a NULL-bearing diff** — `o.col = n.col` never matches NULLs, so every row with a NULL
+  shows up as "missing" on both sides; join with `EXISTS (SELECT … INTERSECT SELECT …)` or `IS NOT DISTINCT FROM`.
 - **DROP/CREATE instead of ALTER on procs/functions/triggers** — resets Query Store tracking and kills forced plans.
 - **Renaming a database with forced plans** — forcing fails (three-part-name references), silent recompiles.
 - **Unparameterized ad hoc floods** — plan cache and Query Store bloat, capture-mode fallout; parameterize, or use
@@ -280,3 +413,20 @@ END
 - https://learn.microsoft.com/en-us/sql/t-sql/functions/checksum-transact-sql?view=sql-server-ver17
 - https://learn.microsoft.com/en-us/sql/sql-server/what-s-new-in-sql-server-2025?view=sql-server-ver17
 - https://learn.microsoft.com/en-us/sql/sql-server/sql-server-2025-release-notes?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/sql/t-sql/functions/concat-ws-transact-sql?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/sql/t-sql/functions/cast-and-convert-transact-sql?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/sql/t-sql/functions/checksum-agg-transact-sql?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/sql/t-sql/queries/is-distinct-from-transact-sql?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/performance/resolve-blocking-problems-caused-lock-escalation
+- https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-deadlocks-guide?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/azure/azure-sql/database/analyze-prevent-deadlocks
+- https://learn.microsoft.com/en-us/sql/relational-databases/performance/optimized-locking?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/sql/relational-databases/automatic-tuning/automatic-tuning?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/azure/azure-sql/database/automatic-tuning-overview
+- https://learn.microsoft.com/en-us/sql/t-sql/functions/newsequentialid-transact-sql?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/dotnet/framework/data/adonet/sql/comparing-guid-and-uniqueidentifier-values
+- https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.valuegeneration.sequentialguidvaluegenerator
+- https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-objects/sys-dm-db-index-usage-stats-transact-sql?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/ef/core/querying/pagination
+- https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-10.0/breaking-changes

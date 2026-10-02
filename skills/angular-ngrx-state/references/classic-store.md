@@ -1,12 +1,16 @@
 # Classic global Store (`@ngrx/store` + `@ngrx/effects`) — patterns reference
 
-Verified against the NgRx v21 docs (Angular v20+). Use this for **SHARI** state (Shared,
+Verified against NgRx 22.0.1 (Angular 22). Use this for **SHARI** state (Shared,
 Hydrated, Available across route re-entry, Retrieved via side effect, Impacted by many sources) and
 when you want a single serializable state tree with time-travel debugging. For feature/component
 state, prefer the Signal Store (`references/signal-store.md`).
 
 Everything here is the **standalone + functional** style. Don't reproduce NgModules,
 `StoreModule.forRoot`, or class-based effects.
+
+**Migrating a feature to the Signal Store:** go one feature at a time — a Signal Store can read
+remaining global state via `inject(Store).selectSignal(selectX)` in `withProps`/`withComputed`, so
+both coexist. Move a slice only once nothing else dispatches to or selects from it.
 
 ## Contents
 1. Standalone bootstrapping
@@ -23,7 +27,9 @@ Everything here is the **standalone + functional** style. Don't reproduce NgModu
 ## 1. Standalone bootstrapping
 
 Keep `provideStore()` empty at the root; register features with `provideState()` and effects with
-`provideEffects()` — ideally lazily, at the route level.
+`provideEffects()` — ideally lazily, at the route level. The one exception: small app-wide slices
+that must be persisted are registered eagerly as root reducers (`provideStore({ preferences })`),
+see `references/hydration.md` §2.
 
 ```ts
 // app.config.ts
@@ -97,7 +103,7 @@ removes hand-written feature-key strings and boilerplate selectors.
 
 ```ts
 // books.reducer.ts
-import { createFeature, createReducer, on } from '@ngrx/store';
+import { createFeature, createReducer, createSelector, on } from '@ngrx/store';
 
 interface State {
   books: Book[];
@@ -110,8 +116,9 @@ export const booksFeature = createFeature({
   name: 'books',
   reducer: createReducer(
     initialState,
-    on(BookListPageActions.opened, (state) => ({ ...state, loading: true })),
-    on(BooksApiActions.booksLoadedSuccess, (state, { books }) => ({ ...state, books, loading: false })),
+    // explicit `: State` return type — catches stray properties (lint: on-function-explicit-return-type)
+    on(BookListPageActions.opened, (state): State => ({ ...state, loading: true })),
+    on(BooksApiActions.booksLoadedSuccess, (state, { books }): State => ({ ...state, books, loading: false })),
   ),
   extraSelectors: ({ selectBooks, selectActiveBookId }) => ({
     selectActiveBook: createSelector(
@@ -140,8 +147,8 @@ import { mapResponse, concatLatestFrom } from '@ngrx/operators'; // NOT @ngrx/ef
 import { exhaustMap, tap } from 'rxjs';
 
 export const loadBooks = createEffect(
-  (actions$ = inject(Actions), booksService = inject(BooksService)) =>
-    actions$.pipe(
+  (actions$ = inject(Actions), booksService = inject(BooksService)) => {
+    return actions$.pipe(
       ofType(BookListPageActions.opened),
       exhaustMap(() =>
         booksService.getAll().pipe(
@@ -151,22 +158,27 @@ export const loadBooks = createEffect(
           }),
         ),
       ),
-    ),
+    );
+  },
   { functional: true },
 );
 
 // non-dispatching effect
 export const alertOnError = createEffect(
-  (actions$ = inject(Actions)) =>
-    actions$.pipe(
+  (actions$ = inject(Actions)) => {
+    return actions$.pipe(
       ofType(BooksApiActions.booksLoadedFailure),
       tap(({ errorMsg }) => alert(errorMsg)),
-    ),
+    );
+  },
   { functional: true, dispatch: false },
 );
 ```
 
 Key rules:
+- **Name functional effects for what they do** (`loadBooks`, `alertOnError`) — no `$` suffix (that
+  convention was for class-effect fields). Keep the callback a block statement with `return`
+  (lint: `prefer-effect-callback-in-block-statement`) — type errors are easier to read.
 - **`catchError`/`mapResponse` must be *inside* the flattening operator** (`switchMap`/`exhaustMap`
   /`concatMap`/`mergeMap`) so an error doesn't complete the outer effect stream and stop it
   reacting to future actions.
@@ -242,12 +254,13 @@ books/
 ├── book-list-page.actions.ts   # page/UI events
 ├── books-api.actions.ts        # API result events
 ├── books.reducer.ts            # createFeature -> reducer + auto selectors (+ extraSelectors)
-├── books.effects.ts            # functional effects, xxx$ names, inject() deps
+├── books.effects.ts            # functional effects (loadBooks, …), inject() deps
 └── books.selectors.ts          # only if you keep derived selectors out of createFeature
 ```
 
-Conventions: action type `[Source] Event`; feature name a short lowercase string; effect fields end
-in `$`; prefer `#private`/`inject()` over constructor injection; register state/effects in the
+Conventions: action type `[Source] Event`; feature name a short lowercase string; functional
+effects named for what they do, no `$` suffix; selectors prefixed `select`; prefer
+`#private`/`inject()` over constructor injection; register state/effects in the
 feature route's `providers` for lazy loading.
 
 ## 8. Testing
@@ -255,14 +268,22 @@ feature route's `providers` for lazy loading.
 - **Reducers** — call directly (pure function). Unknown action → same reference; known action → new
   instance.
   ```ts
-  expect(booksReducer(initialState, { type: 'Unknown' } as any)).toBe(initialState);
-  expect(booksReducer(initialState, retrieved({ books }))).not.toBe(initialState);
+  const initial = reducer(undefined, { type: '@@init' });
+  expect(reducer(initial, { type: 'Unknown' })).toBe(initial);
+  expect(reducer(initial, BooksApiActions.booksLoadedSuccess({ books }))).not.toBe(initial);
   ```
-- **Selectors** — test the projector, no store: `selectBookCollection.projector(allBooks, ['1','2'])`.
-- **Functional effects** — plain function calls, pass fakes as args, no `TestBed`:
+- **Selectors** — test the projector, no store: `selectActiveBook.projector(books, '2')`.
+- **Functional effects** — plain function calls, pass fakes as args, no `TestBed`. Await the
+  emission (Vitest rejects the Jasmine-style `done` callback that the ngrx.io example uses):
   ```ts
-  loadBooks(of(BookListPageActions.opened()), { getAll: () => of(booksMock) } as BooksService)
-    .subscribe((action) => { expect(action).toEqual(BooksApiActions.booksLoadedSuccess({ books: booksMock })); done(); });
+  import { firstValueFrom, of } from 'rxjs';
+
+  it('loads books', async () => {
+    const action = await firstValueFrom(
+      loadBooks(of(BookListPageActions.opened()), { getAll: () => of(booksMock) } as BooksService),
+    );
+    expect(action).toEqual(BooksApiActions.booksLoadedSuccess({ books: booksMock }));
+  });
   ```
 - **Components/guards that select state** — `provideMockStore({ initialState, selectors: [{ selector, value }] })`
   from `@ngrx/store/testing`; override with `overrideSelector`, update via `setResult()` +

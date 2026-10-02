@@ -47,10 +47,10 @@ status/supersede rules, and the generated `index.md`. Follow it exactly.
 - **No numbering.** Date-named files only, in the skill's folder.
 - **Use the skill's exact sections** — nothing added (no separate review/assessment block), nothing
   dropped.
-- **Never edit an Accepted ADR** except its status line when superseding; reverse via a new record. RFCs
+- **Never edit an Accepted ADR** except its status line when superseding or deprecating it (statuses: Proposed, Accepted, Rejected, Deprecated, Superseded — see the `adr` skill); reverse via a new record. RFCs
   evolve through their status lifecycle while in Draft/In Review.
 - **The index is generated** — rewrite it wholesale; never hand-edit inside the markers.
-- **Leave legacy artefacts alone** — pre-existing numbered ADRs and `README.md` are not yours to touch.
+- **Leave legacy artefacts alone** — pre-existing numbered ADRs/RFCs and their legacy indexes (`docs/adr/README.md`, `docs/rfc/README.md`) are not yours to touch; each generated `index.md` links its legacy README once. (`docs/README.md`, the docs-wide index, only gets the one `adr/index.md` / `rfc/index.md` link.)
 - English. Concise. Write for the engineer who inherits this in two years.
 
 ## Output

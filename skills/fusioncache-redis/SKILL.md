@@ -1,6 +1,6 @@
 ---
 name: fusioncache-redis
-description: Use when adding or changing caching in .NET — cache keys, invalidation, Redis, IDistributedCache, HybridCache, cache stampede/thundering herd, stale data, or slow reads that should be cached. FusionCache is the standard; never hand-roll IMemoryCache+Redis combos.
+description: Use when adding or changing caching in .NET — cache keys, invalidation, Redis, Redis connection setup, IDistributedCache, HybridCache, output cache vs data cache, cache stampede/thundering herd, stale data, testing cached code, or slow reads that should be cached. FusionCache is the standard; never hand-roll IMemoryCache+Redis combos.
 ---
 
 # FusionCache + Redis
@@ -14,10 +14,17 @@ Do **not** use `IMemoryCache`, `IDistributedCache`, or raw `StackExchange.Redis`
 ## Wiring
 
 ```csharp
-builder.Services.AddStackExchangeRedisCache(o =>
-    o.Configuration = builder.Configuration.GetConnectionString("Redis"));
+// One multiplexer for L2 + backplane. AbortOnConnectFail = false (= abortConnect=false in the
+// connection string): the app starts and degrades to L1-only while Redis is unreachable.
+var redisOptions = ConfigurationOptions.Parse(builder.Configuration.GetConnectionString("Redis")!);
+redisOptions.AbortOnConnectFail = false;
+var redis = new Lazy<Task<IConnectionMultiplexer>>(
+    async () => await ConnectionMultiplexer.ConnectAsync(redisOptions));
+
+builder.Services.AddStackExchangeRedisCache(o => o.ConnectionMultiplexerFactory = () => redis.Value);
 
 builder.Services.AddFusionCache()
+    .WithCacheKeyPrefix("shop:")                        // app isolation on a shared Redis
     .WithDefaultEntryOptions(new FusionCacheEntryOptions
     {
         Duration = TimeSpan.FromMinutes(5),
@@ -31,12 +38,21 @@ builder.Services.AddFusionCache()
         DistributedCacheSoftTimeout = TimeSpan.FromSeconds(1),
         AllowBackgroundDistributedCacheOperations = true,
     })
-    .WithSerializer(new FusionCacheSystemTextJsonSerializer())
+    .WithSerializer(new FusionCacheSystemTextJsonSerializer(
+        new JsonSerializerOptions { TypeInfoResolver = AppJsonContext.Default }))
     .WithRegisteredDistributedCache()
-    .WithBackplane(new RedisBackplane(new RedisBackplaneOptions
-    {
-        Configuration = builder.Configuration.GetConnectionString("Redis"),
-    }));
+    .WithStackExchangeRedisBackplane(o => o.ConnectionMultiplexerFactory = () => redis.Value);
+```
+
+**Source-generated serializer:** FusionCache stores each L2 value inside its own envelope, so the
+context must list the envelope per cached type plus `long` (tag/`Clear()` barriers) — a missing type
+throws `FusionCacheSerializationException` on the first L2 write:
+
+```csharp
+[JsonSerializable(typeof(ProductDto))]
+[JsonSerializable(typeof(FusionCacheDistributedEntry<ProductDto>))] // ZiggyCreatures.Caching.Fusion.Internals.Distributed
+[JsonSerializable(typeof(FusionCacheDistributedEntry<long>))]
+internal sealed partial class AppJsonContext : JsonSerializerContext;   // the app's one context (aspnet-backend)
 ```
 
 Packages: `ZiggyCreatures.FusionCache`, `ZiggyCreatures.FusionCache.Serialization.SystemTextJson`, `ZiggyCreatures.FusionCache.Backplane.StackExchangeRedis`, `Microsoft.Extensions.Caching.StackExchangeRedis`.
@@ -85,10 +101,30 @@ the scoped `AppDbContext`, so request code keeps injecting the context directly.
 dependencies inside a cache factory, use `IServiceScopeFactory`:
 `await using var scope = scopeFactory.CreateAsyncScope();`.
 
+**Invalidation is not instantly global.** With background distributed operations on, `RemoveAsync` /
+`RemoveByTagAsync` return once L1 is updated; L2 and the backplane follow, so another node can serve the
+old value for a few milliseconds. Where the next request on another node must see the write, make that
+call wait:
+
+```csharp
+await cache.RemoveAsync(CacheKeys.Product(id), o =>
+{
+    o.AllowBackgroundDistributedCacheOperations = false;
+    o.AllowBackgroundBackplaneOperations = false;
+}, ct);
+// RemoveByTagAsync takes options, not a lambda: cache.CreateEntryOptions(o => { ...same two lines... })
+```
+
 ## Key & tag conventions
 
 - Central `static class CacheKeys`: `public static string Product(int id) => $"product:{id}";` — never inline string keys.
 - Key format: `{entity}:{id}` or `{entity}:{qualifier}:{value}`, lowercase, colon-separated.
+- **Tenant- or user-scoped data MUST carry the tenant/user id in the key**: `{tenant}:{entity}:{id}`
+  (`CacheKeys.Order(tenantId, id)`). A key without it serves one tenant's data to another — a security
+  bug, not a cache bug. Pass the id in as a parameter; never read it from ambient context (`HttpContext`,
+  a scoped tenant accessor) inside the factory — it may run after the request is gone.
+- `WithCacheKeyPrefix("app:")` (or `WithCacheKeyPrefixByCacheName()` for named caches) when several
+  apps share one Redis.
 - Tags (FusionCache v2) for group invalidation: tag every entry with its entity collection (`"products"`) so writes can `RemoveByTagAsync`.
 - Cache **DTOs/projections, never EF entities** (tracking references + serialization pitfalls).
 - Version keys when the shape changes: `product:v2:{id}` avoids poisoned deserialization after deploys.
@@ -97,11 +133,28 @@ dependencies inside a cache factory, use `IServiceScopeFactory`:
 
 | Cache | Don't cache |
 |---|---|
-| Read-heavy reference data (lookups, config) | Per-user unless keyed by user id |
+| Read-heavy reference data (lookups, config) | Tenant/user data without the id in the key |
 | Expensive query projections | Anything transactional/consistency-critical |
 | External API responses (with fail-safe) | Large blobs (>~1 MB — Redis pressure) |
 
 Invalidate on write (explicit `RemoveAsync`/`RemoveByTagAsync` in the code path that mutates), rely on duration+jitter as the safety net — not the primary mechanism.
+
+This is the **data** cache. Whole HTTP responses belong to ASP.NET Core output caching (`aspnet-backend`);
+use it for anonymous, identical-for-everyone responses and FusionCache for the data behind
+per-user/per-tenant responses.
+
+## Testing
+
+Never mock `IFusionCache` (`dotnet-testing`) — use a real one:
+- **Unit tests**: `new FusionCache(new FusionCacheOptions())` — memory-only, no Redis; substitute the
+  factory's dependency and assert it was called once for two reads.
+- **Fail-safe / timeouts, deterministically**: prime the entry, `await cache.ExpireAsync(key)`
+  (logically expired, stale kept), then make the substituted dependency throw or never complete →
+  assert the stale value comes back. No sleeps.
+- **L2 + backplane**: Testcontainers Redis and **two** FusionCache instances on it; set on node A,
+  poll node B until it sees the new value (pub/sub is async).
+
+Code for all three: [references/best-practices.md](references/best-practices.md#testing-cached-code).
 
 ## Common mistakes
 
@@ -113,7 +166,9 @@ Invalidate on write (explicit `RemoveAsync`/`RemoveByTagAsync` in the code path 
 | Fail-safe off for external calls | Serving slightly stale beats a 500 |
 | Caching entities with nav properties | Cache flat DTOs |
 | Invalidation without backplane in multi-node | Other nodes serve stale L1 for the full duration |
-| Redis down = app down | L2 problems must degrade to L1-only (soft timeouts + background distributed ops, as wired above) |
+| Redis down = app down | L2 problems must degrade to L1-only (`abortConnect=false` + soft timeouts + background distributed ops, as wired above) |
+| Key missing tenant/user id | Cross-tenant data leak — put the id in the key |
+| One multiplexer each for L2, backplane, locker | Share one via `ConnectionMultiplexerFactory` |
 
 ## Official docs — verify, don't guess
 
@@ -121,4 +176,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - FusionCache (docs index): https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/README.md
 - Redis: https://redis.io/docs/latest/
 - StackExchange.Redis client: https://stackexchange.github.io/StackExchange.Redis/
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
+- **Established patterns & current versions (verified July 2026, FusionCache October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

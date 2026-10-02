@@ -1,5 +1,5 @@
 ---
-description: Record a technical/architecture decision as a MADR-lite ADR (tech-lead agent)
+description: Record a technical/architecture decision as an ADR — Nygard + Alternatives, date-named (tech-lead agent)
 argument-hint: [decision topic] (e.g. "adopt FusionCache as the only cache")
 ---
 

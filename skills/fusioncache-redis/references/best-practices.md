@@ -10,14 +10,21 @@ This file extends `SKILL.md` — read that first for the standard wiring and usa
 
 | Component | Version | Notes |
 |---|---|---|
-| ZiggyCreatures.FusionCache | **2.6.0** (2026-03-14) | Targets netstandard2.0 / net8.0 / net9.0 — runs fine on net10.0. AOT-compatible since 2.2.0. |
+| ZiggyCreatures.FusionCache | **2.9.0** (2026-09-22) | Targets netstandard2.0 / net8.0 / net9.0 / net10.0. AOT-compatible since 2.2.0. Verified October 2026. |
 | StackExchange.Redis | **3.0.17** (2026-07-10) | v3.0 line is new (June 2026); 2.13.x was the prior stable line. Check the 3.0 release notes before upgrading a 2.x app. |
 | Redis Open Source | **8.8.0** GA (2026-05-25) | 8.x line; 8.6 added the LRM (least-recently-modified) eviction policies. |
 
 Notable in FusionCache 2.5/2.6: optional **distributed-level stampede protection** via
-`IFusionCacheDistributedLocker` (Redis implementation available), `MemoryCacheDuration` entry
-option as a cache-coherence mitigation when no backplane exists, configurable cleanup behavior
-for `RemoveByTag()`, and a built-in Best Practices Advisor that flags configuration issues.
+`IFusionCacheDistributedLocker` (see below), `MemoryCacheDuration` entry option as a
+cache-coherence mitigation when no backplane exists, configurable cleanup behavior for
+`RemoveByTag()`, and a built-in Best Practices Advisor that flags configuration issues.
+
+Notable in 2.7–2.9 (use **≥ 2.9.0**): builder extensions `WithRedisDistributedLocker()` (2.8)
+next to `WithStackExchangeRedisBackplane()`; fixes for distributed locks not being released
+(`SkipDistributedCacheWrite` in 2.8, failed L1 write in 2.9) and for an expired tag marker being
+re-materialized with a newer timestamp, which acted like a spurious `RemoveByTag()` (2.8); eager
+refresh now checks L2 before running the factory (2.9); the Advisor warns when the System.Text.Json
+serializer cannot round-trip value tuples (2.7) — cache records, not tuples.
 
 ## Established patterns
 
@@ -115,6 +122,24 @@ its tags' barrier timestamps — older entries are treated as expired ("a sort o
 - No backplane at all in multi-node? `MemoryCacheDuration` (v2.5+) caps how long L1 can be out
   of sync — the docs call this a *mitigation*, not a solution.
 
+### Distributed stampede protection (distributed locker)
+
+The in-memory locker (always on) limits a cold key to **one factory run per node**; a distributed
+locker limits it to **one across all nodes**. The docs' own verdict: going from 100,000 queries to
+10 is the big win, from 10 to 1 "less so" — and every factory run then pays a Redis lock round-trip.
+Add it only for **expensive or rate-limited factories in multi-node setups** (heavy aggregations,
+paid/throttled external APIs):
+
+```csharp
+// package ZiggyCreatures.FusionCache.Locking.Distributed.Redis (>= 2.9.0), same multiplexer as in SKILL.md
+    .WithRedisDistributedLocker(o => o.ConnectionMultiplexerFactory = () => redis.Value);
+```
+
+Opt cheap calls out per call with `options => options.SetSkipDistributedLocker(true)` (or set
+`SkipDistributedLocker = true` in `DefaultEntryOptions` and opt the expensive calls back in). It is
+an **efficiency** measure, not a correctness lock — never rely on it for "only one node does X"; use
+a real distributed lock (raw Redis, DB) for that.
+
 ### Named caches
 
 `services.AddFusionCache("Products")` registers an isolated instance (own duration defaults,
@@ -157,8 +182,8 @@ the first number you need when tuning durations.
 - **`maxmemory-policy allkeys-lru`**: the documented "good default option" (Pareto-shaped
   access). `allkeys-lfu` if a stable hot set dominates. The default `noeviction` turns a full
   cache into write errors — never ship it for a cache. Since every FusionCache entry has a TTL,
-  `volatile-*` also works, but `allkeys-*` is more memory-efficient (no per-key expire cost
-  matters less, and FusionCache tolerates arbitrary eviction by design).
+  `volatile-*` would also work; prefer `allkeys-*` anyway — it never runs out of eviction
+  candidates, and FusionCache tolerates arbitrary eviction by design.
 - **Persistence off**: RDB and AOF both disabled (`save ""`, `appendonly no`). The persistence
   docs state it plainly: "You can disable persistence completely. This is sometimes used when
   caching." Everything in a FusionCache L2 is reconstructible from the source of truth.
@@ -176,14 +201,109 @@ the first number you need when tuning durations.
 ### StackExchange.Redis connection
 
 - `ConnectionMultiplexer` is thread-safe and "designed to be shared and reused" — one instance
-  per Redis endpoint for the application lifetime. `AddStackExchangeRedisCache` and the
-  FusionCache Redis backplane already manage this; only when using raw StackExchange.Redis for
-  non-cache work (locks, streams) register your own singleton.
+  per Redis endpoint for the application lifetime. `RedisCache`, the Redis backplane and the
+  Redis distributed locker each open their **own** multiplexer from a `Configuration` string;
+  pass the same `ConnectionMultiplexerFactory` to all of them (as in SKILL.md — the pattern the
+  FusionCache docs show). Raw StackExchange.Redis for non-cache work (locks, streams) gets its
+  own singleton, ideally on the separate durable instance.
 - Connection string for cache workloads: `abortConnect=false` so the app starts even if Redis
   is briefly down (this is Azure's default for exactly that reason) — with FusionCache this is
   what lets the app degrade to L1-only instead of failing at startup.
 - Reconnects are automatic with exponential backoff (`ReconnectRetryPolicy`); do not write
   reconnect loops. Leave `allowAdmin=false` unless an ops tool truly needs it.
+
+### Testing cached code
+
+`dotnet-testing` forbids mocking `IFusionCache`. Use real instances and substitute the factory's
+dependencies instead.
+
+```csharp
+[Fact]
+public async Task Second_read_is_a_cache_hit()
+{
+    var ct = TestContext.Current.CancellationToken;
+    using var cache = new FusionCache(new FusionCacheOptions());   // memory-only, no Redis
+    var api = Substitute.For<IRatesApi>();
+    api.GetRateAsync("EURUSD", Arg.Any<CancellationToken>()).Returns(new RateDto(1.1m));
+    var sut = new RateService(cache, api);
+
+    await sut.GetAsync("EURUSD", ct);
+    await sut.GetAsync("EURUSD", ct);
+
+    await api.Received(1).GetRateAsync("EURUSD", Arg.Any<CancellationToken>());
+}
+
+[Fact]
+public async Task Factory_failure_serves_stale_value()
+{
+    var ct = TestContext.Current.CancellationToken;
+    using var cache = new FusionCache(new FusionCacheOptions
+    {
+        DefaultEntryOptions = new FusionCacheEntryOptions { IsFailSafeEnabled = true },
+    });
+    var api = Substitute.For<IRatesApi>();
+    api.GetRateAsync("EURUSD", Arg.Any<CancellationToken>()).Returns(
+        Task.FromResult(new RateDto(1.1m)),
+        Task.FromException<RateDto>(new HttpRequestException()));
+    var sut = new RateService(cache, api);
+
+    await sut.GetAsync("EURUSD", ct);                              // prime
+    await cache.ExpireAsync(CacheKeys.Rate("EURUSD"), token: ct);  // logically expired, stale kept
+    var rate = await sut.GetAsync("EURUSD", ct);                   // factory throws → fail-safe
+
+    Assert.Equal(1.1m, rate.Rate);
+}
+```
+
+Soft timeout works the same way: set `FactorySoftTimeout` (e.g. 50 ms) and return a
+`TaskCompletionSource<T>().Task` that never completes on the second call — the stale value must
+come back without waiting. No `Task.Delay`-based expiry anywhere.
+
+Cross-node behavior (L2 + backplane) needs a real Redis and two cache instances in one process:
+
+```csharp
+// Redis comes from an assembly/collection fixture (one container per test run — dotnet-testing),
+// e.g. a RedisFixture wrapping new RedisBuilder("redis:8").Build() (Testcontainers.Redis).
+public sealed class CacheBackplaneTests(RedisFixture redis)
+{
+[Fact]
+public async Task Write_on_node_A_is_seen_by_node_B()
+{
+    var ct = TestContext.Current.CancellationToken;
+    using var nodeA = CreateNode(redis.GetConnectionString());
+    using var nodeB = CreateNode(redis.GetConnectionString());
+
+    await nodeA.SetAsync("product:1", new ProductDto(1, "old"), token: ct);
+    Assert.Equal("old", (await nodeB.GetOrDefaultAsync<ProductDto>("product:1", token: ct))!.Name);
+
+    await nodeA.SetAsync("product:1", new ProductDto(1, "new"), token: ct); // backplane evicts B's L1
+
+    var deadline = DateTime.UtcNow.AddSeconds(5);                  // pub/sub is async: poll
+    ProductDto? seen;
+    while ((seen = await nodeB.GetOrDefaultAsync<ProductDto>("product:1", token: ct))!.Name != "new"
+           && DateTime.UtcNow < deadline)
+        await Task.Delay(50, ct);
+    Assert.Equal("new", seen!.Name);
+
+    static FusionCache CreateNode(string redisConnection)
+    {
+        var cache = new FusionCache(new FusionCacheOptions());
+        cache.SetupDistributedCache(
+            new RedisCache(new RedisCacheOptions { Configuration = redisConnection }),
+            new FusionCacheSystemTextJsonSerializer(
+                new JsonSerializerOptions { TypeInfoResolver = AppJsonContext.Default })); // the app's real options
+        cache.SetupBackplane(new RedisBackplane(new RedisBackplaneOptions { Configuration = redisConnection }));
+        return cache;
+    }
+}
+}
+```
+
+Use distinct keys per test (or a per-test `CacheKeyPrefix`) since the container is shared.
+
+Use the app's real serializer options there — it is the test that catches a missing source-gen
+envelope type. In `WebApplicationFactory` tests, point the `Redis` connection string at the
+container instead of replacing FusionCache.
 
 ## Anti-patterns
 
@@ -198,6 +318,8 @@ the first number you need when tuning durations.
 | `FactoryHardTimeout` with no exception handling | It throws `SyntheticTimeoutException` by design | Catch it at the call site, or prefer soft timeout + fail-safe |
 | Fail-safe on but no `failSafeDefaultValue` for cold-start-critical external calls | First-ever call has no stale value — failure still surfaces | Pass `failSafeDefaultValue` where a placeholder is acceptable |
 | New `ConnectionMultiplexer` per operation (or in `using`) | Docs: it is meant to be shared and held "for the application's lifetime" | One singleton per endpoint |
+| Distributed locker used as a "run once cluster-wide" guarantee | It is an efficiency optimization, not a correctness lock | Real distributed lock for correctness; locker only for expensive/rate-limited factories |
+| Source-gen-only `TypeInfoResolver` without FusionCache's envelope types | Every L2 write throws `FusionCacheSerializationException` — L1 keeps working, so it hides | Add `FusionCacheDistributedEntry<T>` per cached type + `<long>` to the context (SKILL.md); the two-node test catches it |
 | Default `abortConnect=true` against cloud Redis | App fails to start during a Redis blip instead of degrading to L1 | `abortConnect=false` in the connection string |
 | `noeviction` (server default) on a cache instance | Full memory ⇒ write errors ⇒ degraded cache, not evictions | `maxmemory` + `allkeys-lru` |
 | AOF/RDB enabled on a pure cache | fork() latency spikes, disk I/O, slower restarts — for data you can rebuild | Disable persistence; if the instance also holds durable data, split into two instances |
@@ -215,6 +337,8 @@ the first number you need when tuning durations.
 - https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/EagerRefresh.md
 - https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/Tagging.md
 - https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/Backplane.md
+- https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/BackgroundDistributedOperations.md
+- https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/CacheStampede.md
 - https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/AutoRecovery.md
 - https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/CacheLevels.md
 - https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/NamedCaches.md

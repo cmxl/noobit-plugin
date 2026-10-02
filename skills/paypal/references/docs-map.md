@@ -12,7 +12,7 @@ for every REST API: field names, max lengths, enums, required headers, endpoint 
 | Spec | Covers |
 |---|---|
 | `checkout_orders_v2.json` | Orders: create/patch/confirm/authorize/capture, `purchase_units`, `PayPal-Request-Id`, `Prefer` |
-| `payments_payment_v2.json` | Authorizations, captures, refunds — the resources inside `PAYMENT.*` webhooks |
+| `payments_payment_v2.json` | Authorizations, captures, refunds — the resources inside `PAYMENT.*` webhooks, plus sample webhook events (as operation `callbacks`) |
 | `notifications_webhooks_v1.json` | Webhook CRUD, event types, events list/show/resend, simulate, verify-webhook-signature |
 | `reporting_transactions_v1.json` | Transaction Search, balances |
 
@@ -61,7 +61,7 @@ Treat these as open questions and verify against your own sandbox when they matt
 |---|---|---|---|
 | Declined capture event name | event-names page: `PAYMENT.CAPTURE.DECLINED` under Payments v2; `.DENIED` under Payments v1 (deprecated) and Marketplaces/platforms | webhooks spec (simulate-event) mentions `.DENIED` | Subscribe to `DECLINED` (the v2 event); handling `DENIED` too is harmless. Confirm with `GET /v1/notifications/webhooks-event-types` |
 | `PayPal-Request-Id` retention | Orders spec: 6 h (72 h via account manager) | requests page: "up to 45 days" (generic, refund example) — possibly per-API | Assume 6 h for orders; don't rely on it for long-delayed retries — use your own unique constraints |
-| Resource of `PAYMENT.CAPTURE.REFUNDED` / `.REVERSED` | event-names page links inconsistent schemas | — | Read `resource_type` per event; re-fetch via API |
+| Resource of `PAYMENT.CAPTURE.REFUNDED` / `.REVERSED` | event-names page links inconsistent schemas | `payments_payment_v2.json` sample `PAYMENT.CAPTURE.REFUNDED` event: `resource_type: "refund"`, `links[] rel: up` → capture; no `.REVERSED` sample | Route on `resource_type` per event; re-fetch via API |
 | `PAYPAL-AUTH-ALGO` header | not listed on the integration page | spec: `auth_algo` "extract from the PAYPAL-AUTH-ALGO header" | Store it; the postback requires it |
 
 **Not documented anywhere official** (state as assumption if you rely on it): delivery timeout value,

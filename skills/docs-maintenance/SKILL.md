@@ -1,6 +1,6 @@
 ---
 name: docs-maintenance
-description: Use when creating project documentation, after implementing features or architectural changes that need documenting, when adding diagrams, or when docs/ content may have drifted from the code. All projects keep cross-referenced markdown docs in docs/ with Mermaid diagrams.
+description: Use when creating project documentation, after implementing features or architectural changes that need documenting, when adding diagrams, or when docs/ content may have drifted from the code. All projects keep cross-referenced markdown docs in docs/ with Mermaid diagrams. Not for recording a decision (noobit:adr) or a design proposal (noobit:rfc).
 ---
 
 # Docs Maintenance
@@ -18,7 +18,7 @@ docs/
   getting-started.md     # clone → run locally (docker compose) → test
   deployment.md          # build, compose, nginx, certs (see docker / nginx-deploy)
   security.md            # BFF model, cookies, CSRF, headers
-  api.md                 # endpoint overview (detail lives in OpenAPI; this is the map)
+  api.md                 # endpoint map — groups, auth, links to the generated OpenAPI doc; never hand-copied schemas
   data-model.md          # ER diagram + ownership/consistency notes
   messaging.md           # exchanges, queues, events (only if RabbitMQ used)
   features/
@@ -32,6 +32,13 @@ ADRs and RFCs are **not** written by hand under this skill: their format, file n
 `adr` and `rfc` skills (authored via `/noobit:adr` / `/noobit:rfc`, tech-lead agent).
 
 Scale down for small projects (README.md + architecture.md minimum) — but the index rule always holds.
+
+The root `README.md` stays short (what it is, quick start, link to `docs/README.md`) — it points into
+`docs/`, it does not duplicate it. When a getting-started step or doc name changes, update both.
+
+**Existing repos win.** If docs already live elsewhere (e.g. a `wiki/` folder, a published wiki with its
+own front matter, `:::mermaid` fences on Azure DevOps), follow that location and syntax — don't
+introduce a parallel `docs/` tree. Apply the rules here (index, cross-links, update triggers) within it.
 
 ## Cross-reference rules
 
@@ -52,6 +59,8 @@ Use the right diagram per question — architecture: `flowchart TB` (containers/
 
 ```mermaid
 sequenceDiagram
+    accTitle: Cached product list read
+    accDescr: The BFF serves the product list from Redis and falls back to PostgreSQL on a cache miss
     participant B as Browser (Angular)
     participant BFF as ASP.NET Core BFF
     participant R as Redis (FusionCache L2)
@@ -65,7 +74,7 @@ sequenceDiagram
     BFF-->>B: 200 JSON
 ```
 
-Keep diagrams small (≤ ~12 nodes) — two focused diagrams beat one wall chart. Diagrams live next to the prose that explains them, and are updated with the change that invalidates them.
+Every diagram gets `accTitle` + `accDescr` (screen readers). Keep diagrams small (≤ ~12 nodes) — two focused diagrams beat one wall chart. Diagrams live next to the prose that explains them, and are updated with the change that invalidates them.
 
 ## Update triggers → affected docs
 
@@ -89,13 +98,17 @@ The `docs-maintainer` agent / `/docs-sync` command automates this: it diffs the 
 | "I'll document it later" | Same commit, or it never happens |
 | Doc exists but index doesn't link it | Index is mandatory; check on every new doc |
 | One-way links | `## Related` sections link both directions |
+| Broken links after a rename | `lychee --offline --include-fragments 'docs/**/*.md'` (see reference) |
 | ASCII-art / image-file diagrams | Mermaid in the markdown |
 | Restating code line-by-line | Document intent, flows, and decisions — not syntax |
 | Editing accepted ADRs | New ADR that supersedes it (`noobit:adr` — only the old record's status line changes) |
 | Hand-written, numbered ADRs (`0001-…`) | `/noobit:adr` — date-named records + generated index |
 
+## Reference
+
+**Read [references/best-practices.md](references/best-practices.md) before writing docs or diagrams** — Mermaid version and renderer differences (v12 layout/look), stable vs. experimental diagram types, link checking (verified October 2026).
+
 ## Official docs — verify, don't guess
 
 When diagram syntax is uncertain, WebFetch the official docs instead of guessing:
 - Mermaid: https://mermaid.js.org/intro/
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

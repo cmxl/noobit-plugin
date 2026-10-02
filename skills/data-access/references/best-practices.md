@@ -98,6 +98,28 @@ await db.Orders.Where(o => o.Id == id).ExecuteUpdateAsync(s =>
 - Implement **both sync and async** method pairs or one path silently misses the behavior.
 - `IMaterializationInterceptor`, `IQueryExpressionInterceptor`, `IIdentityResolutionInterceptor` are *singleton interceptors*: they become part of EF's internal service provider. **Reuse one instance** — passing `new MyInterceptor()` inside `AddDbContext` builds a new internal service provider each time (`ManyServiceProvidersCreatedWarning`, degraded performance). Stateless interceptors should be `static readonly` singletons regardless of kind.
 
+### Optimistic concurrency — resolving conflicts
+
+Token mapping: MSSQL `[Timestamp] public byte[] Version` (rowversion); Npgsql `[Timestamp] public uint Version` (or `.IsRowVersion()`) maps to the hidden `xmin` system column — no extra column in the migration. SQLite has no auto-updating type: use an application-managed `[ConcurrencyCheck] Guid` you reassign on every save. Resolution follows the docs' current/original/database-values pattern:
+
+```csharp
+try
+{
+    await db.SaveChangesAsync(ct);
+}
+catch (DbUpdateConcurrencyException ex)
+{
+    var entry = ex.Entries.Single();
+    var dbValues = await entry.GetDatabaseValuesAsync(ct);
+    if (dbValues is null) throw;                 // deleted concurrently — surface as 404/409
+    // decide per property (merge / client-wins / store-wins); here: client wins
+    entry.OriginalValues.SetValues(dbValues);    // refresh the token so the next save passes the check
+    await db.SaveChangesAsync(ct);
+}
+```
+
+For user-facing edits the usual answer is store-wins: return 409 with the current values and let the user re-apply. `ExecuteUpdate`/`ExecuteDelete` skip the token check unless you add it to the `Where`.
+
 ### Migration deployment (official trade-offs)
 
 | Option | Official position |
@@ -140,7 +162,7 @@ public async Task<IReadOnlyList<OrderWithCustomer>> GetRecentAsync(int take, Can
 - `NpgsqlDataSource` (Npgsql 7+) is the entry point: build **one thread-safe singleton** and use it everywhere; connections drawn from it are pooled — open/close freely per operation.
 - Positional parameters (`$1`) are PostgreSQL-native and fastest; named (`@p`) are supported but require SQL rewriting (Dapper uses named — acceptable, just known overhead).
 - EF: pass config through `UseNpgsql(...)`; with EF9+/EF10 configure the data source via `ConfigureDataSource(...)` inside `UseNpgsql` — the docs warn against *varying* configuration inside `ConfigureDataSource` (the data source is cached; per-invocation differences are ignored). Postgres enums map via `MapEnum<T>("name")`, and when supplying an external data source the enum must be configured at both the ADO.NET and EF layers.
-- PostgreSQL has no implicit plan cache like SQL Server; Npgsql's automatic statement preparation gives the equivalent effect for repeated statements.
+- PostgreSQL has no implicit plan cache like SQL Server. Npgsql's automatic preparation gives the equivalent effect for repeated statements **only when enabled**: `Max Auto Prepare` defaults to **0 (off)** — set it in the connection string (e.g. `Max Auto Prepare=20`; a statement is prepared after `Auto Prepare Min Usages` executions, default 5).
 
 **Microsoft.Data.Sqlite / SQLite**
 - **SQLite has no async I/O: the async ADO.NET methods execute synchronously — docs say avoid calling them.** Design SQLite paths sync (still accept and pass `CancellationToken` at your API boundary for portability); use WAL for the actual concurrency/perf win.
@@ -177,6 +199,9 @@ public async Task<IReadOnlyList<OrderWithCustomer>> GetRecentAsync(int take, Can
 - https://learn.microsoft.com/en-us/ef/core/querying/single-split-queries
 - https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/applying
 - https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/interceptors
+- https://learn.microsoft.com/en-us/ef/core/saving/concurrency
+- https://www.npgsql.org/efcore/modeling/concurrency.html
+- https://www.npgsql.org/doc/prepare.html
 - https://github.com/DapperLib/Dapper
 - https://www.npgsql.org/doc/basic-usage.html
 - https://www.npgsql.org/efcore/index.html
