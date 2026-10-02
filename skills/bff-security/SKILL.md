@@ -1,6 +1,6 @@
 ---
 name: bff-security
-description: Use when implementing authentication, authorization, login/logout, sessions, cookies, CSRF/XSRF, security headers, CSP/XSS hardening, password hashing, login rate limiting, Data Protection keys, YARP credential forwarding, SignalR/WebSocket auth, or connecting an Angular SPA to an ASP.NET Core API — the standard is a custom cookie BFF with no OIDC provider and no tokens in the browser.
+description: Use when implementing authentication, authorization, login/logout, external login (Sign in with GitHub/Discord/…), sessions, cookies, CSRF/XSRF, security headers, CSP/XSS hardening, password hashing, login rate limiting, Data Protection keys, YARP credential forwarding, SignalR/WebSocket auth, or connecting an Angular SPA to an ASP.NET Core API — the standard is a custom cookie BFF with no OIDC provider and no tokens in the browser.
 ---
 
 # BFF Security (Cookie-based, no OIDC)
@@ -10,6 +10,8 @@ description: Use when implementing authentication, authorization, login/logout, 
 The frontend never sees a token. The ASP.NET Core app is the **Backend for Frontend**: it owns authentication with cookie auth (ASP.NET Core Identity or a custom user store), serves/fronts the Angular app on the **same origin**, and proxies any downstream APIs server-side (YARP) attaching credentials there. Browser state = one HttpOnly session cookie + one readable XSRF cookie. No JWTs in localStorage, ever.
 
 **Scope guard — this pattern is for first-party browser clients.** It does NOT fit: third-party/public API consumers, machine-to-machine callers, or native/mobile apps (no shared-origin cookie jar) — those need token-based auth (API keys, client-credentials, or OIDC if the project adds a provider). A service can serve both: cookie BFF endpoints for its own SPA *and* a separately-authenticated token surface for external consumers — keep the two auth schemes and route groups explicitly separate rather than weakening the cookie rules to accommodate outsiders.
+
+**External login ("Sign in with Discord/GitHub/…") belongs here, not in the provider's skill:** the BFF runs the OAuth code flow server-side as an external login and then issues its own session cookie — provider tokens never reach the browser. (Linking a Discord account to an existing user, without making it the login, is `discord`.)
 
 ## Auth wiring
 

@@ -1,0 +1,179 @@
+{
+  "skill_name": "discord",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I have an ASP.NET Core (.NET 10) app for our internal tooling and want a Discord bot for our team server using Discord.Net. Two things: (1) a /status slash command that shows the health of our services (I have an IHealthReporter service that returns name + status + latency per service) as a nice-looking card with a Refresh button that updates the same message, and (2) whenever our deployment pipeline calls POST /api/deployments/{id}/finished on the app, the bot should post a 'deployment finished' message into our #deployments channel. Write the code (a small solution I can drop in) and make sure it builds.",
+      "expected_output": "Gateway bot hosted in the Generic Host with InteractionService, minimal intents, once-only event wiring and command registration, error handling via InteractionExecuted; Components V2 status card with a stateless refresh button (deferred update + edit); endpoint enqueues into a bounded channel and a background publisher posts via IDiscordClient with AllowedMentions.None; options for token/channel id; tests; builds.",
+      "files": [],
+      "assertions": [
+        "Solution builds with dotnet build (0 errors)",
+        "Uses Discord.Net InteractionService modules instead of a hand-rolled SlashCommandExecuted dispatcher",
+        "Event handlers are subscribed once (not inside Ready) and command registration is guarded to run once per process",
+        "Gateway intents are minimal (no GatewayIntents.All / privileged intents)",
+        "Status card uses Components V2 (ComponentBuilderV2 / ContainerBuilder) with the V2 flag on deferred edits",
+        "Refresh button edits the same message (UpdateAsync or deferred update + ModifyOriginalResponseAsync) and works after a restart (stateless custom id)",
+        "/status defers before awaiting the health reporter",
+        "Deployment endpoint enqueues for a background publisher; does not await Discord inline",
+        "Posted deployment message uses AllowedMentions.None",
+        "A rejected/rotated token fails startup (REST check after LoginAsync) and fatal gateway close codes (4004, 4010-4014) stop the host",
+        "Pipeline retries of the same deployment id do not post twice",
+        "Failed interactions get a user-facing reply (InteractionExecuted handler)",
+        "Automated tests cover the Discord-facing code (cards/routing/publisher), not only the HTTP endpoint"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Our web app runs as 3 replicas behind nginx (ASP.NET Core, .NET 10) and we don't want a long-running websocket bot. We want a /ticket slash command in Discord that opens a form (title, description, priority low/medium/high), and when submitted posts the ticket as a card in the channel with Claim and Close buttons that anyone on the team can press (claim should show who claimed it). Use Discord.Net. Give me the implementation, a short setup guide for the Discord developer portal, and make sure it compiles.",
+      "expected_output": "HTTP interactions endpoint: raw body, Ed25519 verification with 401, PING, RunMode.Async + TaskCompletionSource callback, RestInteractionModuleBase<RestInteractionContext> modules, explicit ComponentsV2 flag, modal with Label-based inputs (IModal), stateless custom ids with ticket id, update-message on claim/close, logged-in rest client for follow-ups, root service provider, portal setup incl. Interactions Endpoint URL + public key; tests; builds.",
+      "files": [],
+      "assertions": [
+        "Solution builds with dotnet build (0 errors)",
+        "Uses an HTTP interactions endpoint (no DiscordSocketClient / gateway connection)",
+        "Verifies Ed25519 signature over the raw request body and returns 401 on failure, including malformed headers",
+        "Answers PING with type 1",
+        "Initial responses are returned in the HTTP body (RestInteractionModuleBase or direct Respond JSON) - no plain InteractionModuleBase whose responses are discarded",
+        "Unknown commands / stale buttons are answered within 3 s (dispatch not awaited on the request path, or equivalent)",
+        "When V2 components are used over REST, MessageFlags.ComponentsV2 is set explicitly",
+        "Modal uses Label-based inputs (IModal attributes / AddTextInput), not deprecated ActionRow+TextInput rows",
+        "Priority is constrained to low/medium/high (select menu/choice/enum), not free text",
+        "Concurrent Claim presses on different replicas have exactly one winner (conditional update on shared store or equivalent), loser gets an ephemeral notice",
+        "Claim updates the ticket card in place (UPDATE_MESSAGE) and shows who claimed it",
+        "Setup guide covers Interactions Endpoint URL, Public Key, and single-runner command registration",
+        "Includes signed end-to-end HTTP tests that pass"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Users of our Discord bot complain that commands sometimes run twice (they see the answer twice or an error), /report almost always says 'The application did not respond', and when we rotated the token last week the service just sat there spamming warnings instead of failing. Our ops people also say Discord errors never show up in our logs. The bot code is in inputs/DiscordBotService.cs. Find the problems and give me a fixed version (keep Discord.Net), with a short explanation of each root cause.",
+      "expected_output": "Identifies: handler subscribed inside Ready (duplicates after reconnect) + global re-registration on every Ready; no defer before slow I/O; forever-retry login and LoginAsync not validating token / reconnect loop; Trace-only log bridge without severity mapping; GatewayIntents.All needs privileged intents; no user-facing error reply; embed field limit 25; client disposed in StopAsync, overridden StartAsync without base; recommends InteractionService. Fixed code builds. Also flags /weather: raw user input interpolated into the query string (escape with Uri.EscapeDataString or a typed query builder) and HTTP I/O before responding without a defer.",
+      "files": [
+        "inputs/DiscordBotService.cs"
+      ],
+      "assertions": [
+        "Identifies handler subscription inside Ready as the cause of duplicate command execution",
+        "Identifies missing defer before the slow /report query as the cause of 'did not respond'",
+        "Explains the token-rotation behaviour (LoginAsync only checks format; Discord.Net reconnects on 4004) and the fix fails fast or stops the host",
+        "Identifies the Trace-only log bridge and maps LogSeverity to proper log levels with the exception passed through",
+        "Flags GatewayIntents.All (privileged intents) and reduces intents",
+        "Flags the 25 embed-field limit in /report",
+        "Flags that /weather builds the URL from raw user input ($\"/current?city={city}\") and fixes it with Uri.EscapeDataString (or an equivalent encoder/allow-list)",
+        "Flags that /weather awaits an outbound HTTP call before responding and defers it (or otherwise guarantees the 3 s acknowledgement)",
+        "Adds a user-facing error reply instead of only logging",
+        "Fixed project builds with dotnet build (0 errors)",
+        "Fixed code subscribes handlers once and registers commands at most once per process",
+        "Ships automated tests for the fixes (e.g. fatal close-code classification, severity mapping, embed limits) that pass"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Our ASP.NET Core app (.NET 10) runs a nightly import job. When it fails we want a message in our #alerts Discord channel with the job name, the error summary and a link to the job's log page in our admin UI. We really don't want to run or maintain a Discord bot for this. Implement it and make sure it builds.",
+      "expected_output": "Channel webhook via DiscordWebhookClient (no bot token, no gateway); webhook URL treated as a secret from config; failure enqueued and posted by a background service, not inline in the job; AllowedMentions.None; link button or link only (no interactive components on an unowned webhook); error text truncated to limits; tests.",
+      "files": [],
+      "assertions": [
+        "Solution builds with dotnet build (0 errors)",
+        "Uses a channel webhook (DiscordWebhookClient or webhook URL POST) - no bot token, no DiscordSocketClient",
+        "Webhook URL comes from configuration/secrets, not code, and is treated as a secret (not logged)",
+        "Posting happens off the job's critical path (queue/background) and a Discord outage cannot fail the job",
+        "Message uses AllowedMentions.None (or equivalent) so error text cannot ping",
+        "Only link buttons / plain links - no interactive components on a webhook the app doesn't own",
+        "Error summary is truncated to Discord limits",
+        "Includes automated tests that pass"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "We have an ASP.NET Core (.NET 10) SaaS behind nginx with a cookie-based BFF login. Our Discord app is now user-installable. We need two things: (1) know in our backend whenever someone installs or removes the app (guild or user install) and when they buy/cancel our premium SKU, and (2) a 'Connect Discord' button on the profile page so we can map a Discord user id to our account. We use EF Core with PostgreSQL. Implement it and make sure it builds.",
+      "expected_output": "Webhook Events endpoint: bounded raw body, Ed25519 verification at ingress (401), PING type 0 answered 204 with Content-Type, events stored raw in a scoped EF Core inbox (resolved from RequestServices) with a unique dedupe key and processed out of band; ENTITLEMENT_* noted as also on the gateway; OAuth2 linking behind the BFF: state cookie, server-side code exchange via IHttpClientFactory without retrying the POST, identify scope, tokens never reach the browser; Discord is linked, not the login provider; tests.",
+      "files": [],
+      "assertions": [
+        "Solution builds with dotnet build (0 errors)",
+        "Webhook Events endpoint verifies Ed25519 over the raw body and returns 401 for bad or malformed signatures",
+        "PING (type 0) and events are answered 204 with an empty body (and a Content-Type header)",
+        "Request body is size-capped while reading (not just a Content-Length check)",
+        "Events are stored raw with a dedupe key (unique index) and processed asynchronously; unparseable-but-signed bodies are stored, not 500",
+        "The EF Core inbox is resolved per request (RequestServices / scoped), not from the root provider or a singleton",
+        "OAuth2 linking validates state, exchanges the code server-side via IHttpClientFactory, and does not retry the single-use code POST",
+        "Discord access/refresh tokens never reach the browser; only the Discord user id is required to be stored",
+        "Does not turn Discord into the app's login provider (linking only; login stays with the existing BFF)",
+        "Includes automated tests (signed webhook event requests, dedupe) that pass"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Our ASP.NET Core API runs as 3 replicas in Kubernetes. Please add a Discord bot to it (Discord.Net) with a /stats command that shows our order counts from the database, plus the bot's connection status in our /health/live probe so Kubernetes restarts it when Discord disconnects. Just add it to the existing API project.",
+      "expected_output": "Refuses the trap: a gateway bot inside a 3-replica API means 3 gateway connections and double answers — proposes a separate single-replica worker or HTTP interactions (endpoint scales with the API). Keeps /health/live dependency-free (Discord outage must not restart pods; restarts re-identify and can reset the token); connection state on /health/ready or a metric. /stats defers before the DB query; DbContext used via the per-execution scope; builds; tests.",
+      "files": [],
+      "assertions": [
+        "Explains that running the gateway bot in all 3 replicas causes multiple connections and duplicate/failed answers",
+        "Chooses a fitting topology: separate single-replica bot worker, or HTTP interactions endpoint in the API",
+        "Does not put Discord connection state into /health/live; uses /health/ready or a metric and explains the restart/identify risk",
+        "/stats defers before the database query",
+        "Database access is scoped per interaction (module constructor injection with AutoServiceScopes or IServiceScopeFactory), not a captured DbContext",
+        "Solution builds with dotnet build (0 errors) and includes passing tests"
+      ]
+    }
+  ],
+  "trigger_evals": [
+    {
+      "query": "My Discord.Net bot answers every slash command twice since yesterday's deploy, and sometimes says 'This interaction has already been acknowledged'. What's going on?",
+      "should_trigger": true
+    },
+    {
+      "query": "Post a message to our #alerts Discord channel from our .NET worker when the nightly import fails",
+      "should_trigger": true
+    },
+    {
+      "query": "Discord shows 'The application did not respond' for my /report command (C#, DiscordSocketClient)",
+      "should_trigger": true
+    },
+    {
+      "query": "How do I verify the X-Signature-Ed25519 header on my Discord interactions endpoint in ASP.NET Core?",
+      "should_trigger": true
+    },
+    {
+      "query": "My discord.js bot crashes with DiscordAPIError[10062]: Unknown interaction — how do I fix it in Node?",
+      "should_trigger": false
+    },
+    {
+      "query": "Build a Slack bot in .NET that answers /deploy commands and posts to a channel",
+      "should_trigger": false
+    },
+    {
+      "query": "Write an ASP.NET Core endpoint that verifies the signature of incoming Stripe webhooks before storing them",
+      "should_trigger": false
+    },
+    {
+      "query": "Add 'Sign in with Discord' as a login option to our Angular + ASP.NET Core cookie BFF",
+      "should_trigger": false
+    },
+    {
+      "query": "Make our Teams bot post the build status into a channel",
+      "should_trigger": false
+    },
+    {
+      "query": "My discord.py music bot doesn't play audio in voice channels",
+      "should_trigger": false
+    },
+    {
+      "query": "Our Discord app needs to react when someone installs it to their account — how do I receive APPLICATION_AUTHORIZED in ASP.NET Core?",
+      "should_trigger": true
+    },
+    {
+      "query": "Add a 'Connect Discord' button to the user profile page so we can link their Discord account and give them a role.",
+      "should_trigger": true
+    },
+    {
+      "query": "Turn our deploy notification in the Discord channel into a nicer card with a section, thumbnail and buttons (Components V2).",
+      "should_trigger": true
+    },
+    {
+      "query": "Add Polly retry to the HttpClient that calls our pricing API.",
+      "should_trigger": false
+    },
+    {
+      "query": "Verify the Ed25519 signature on webhooks our partner sends to /hooks/partner.",
+      "should_trigger": false
+    }
+  ]
+}

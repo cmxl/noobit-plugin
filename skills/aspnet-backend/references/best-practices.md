@@ -162,7 +162,7 @@ builder.Services.ConfigureHttpJsonOptions(static o =>
 
 ### Performance (official best-practices page)
 
-- **Async all the way**: no `Task.Wait`/`.Result`, no locks on hot paths, and no `Task.Run` in handlers — request code already runs on pool threads; sync-over-async causes thread-pool starvation.
+- **Async all the way**: no `Task.Wait`/`.Result`, no locks on hot paths, and no `Task.Run` in handlers — request code already runs on pool threads; sync-over-async causes thread-pool starvation. (Exception: work that must outlive the response, e.g. finishing a deferred Discord interaction — see `discord`.)
 - **Kestrel does not support synchronous body reads.** Read/write bodies asynchronously; prefer `JsonSerializer.DeserializeAsync(Request.Body)` over buffering; use `Request.ReadFormAsync()` — `Request.Form` without it is sync-over-async.
 - **Large object heap**: allocations ≥ 85,000 bytes go to the LOH and need Gen 2 collections. Don't buffer large request/response bodies into a single `byte[]`/`string`; pool big buffers with `ArrayPool<T>.Shared`; cache frequently used large objects. (.NET 10's `IMemoryPoolFactory<T>` lives in `Microsoft.AspNetCore.Connections` — the server/transport pool abstraction behind Kestrel's auto-evicting pools, metrics under the `Microsoft.AspNetCore.MemoryPool` meter; it isn't the tool for application buffers.)
 - **Streaming over buffering**: return `IAsyncEnumerable<T>` (async enumeration by the serializer) instead of `IEnumerable<T>` (sync, blocking); paginate large collections rather than returning them whole.
@@ -284,7 +284,7 @@ OTLP is the vendor-neutral default; configure endpoint/resource via standard `OT
 | Anti-pattern | Officially documented fix |
 |---|---|
 | `.Result` / `.Wait()` / sync body reads | Async end-to-end; Kestrel has no sync I/O — `DeserializeAsync`, `ReadFormAsync` |
-| `Task.Run` in a request handler | Just `await`; handler code already runs on pool threads |
+| `Task.Run` in a request handler | Just `await`; handler code already runs on pool threads (unless the work must outlive the response — `discord`) |
 | `async void` endpoint/handler methods | Return `Task` — `async void` completes the response early and crashes on late writes |
 | Buffering large bodies into `byte[]`/`string` | Stream; `ArrayPool<T>.Shared` for buffers ≥ 85 KB |
 | Returning unbounded collections / sync `IEnumerable<T>` | Paginate; return `IAsyncEnumerable<T>` |

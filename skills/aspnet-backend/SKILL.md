@@ -114,7 +114,7 @@ Rules:
 - Never `IConfiguration["key"]` sprinkled through code.
 - Production `appsettings`: `AllowedHosts` = the real hostname(s) (`;`-separated), never `*`. Kestrel's `MaxRequestBodySize` (default 30,000,000 bytes ≈ 28.6 MB) stays equal to nginx's `client_max_body_size` (`30000000` in `nginx-deploy`) — change both together.
 - `IHttpClientFactory` for all outbound HTTP + `AddStandardResilienceHandler()` (Microsoft.Extensions.Http.Resilience — Polly v8 under the hood).
-- Non-HTTP resilience (external SDKs, RabbitMQ ops, anything flaky): **Polly v8** `ResiliencePipeline` via `AddResiliencePipeline` (Polly.Extensions) — never hand-rolled retry/`Task.Delay` loops, and use the v8 pipeline API, not the legacy v7 `Policy` API. EF's `EnableRetryOnFailure` already covers DB transients for **EF only** — don't double-wrap it in Polly; standalone Dapper calls need a Polly v8 `ResiliencePipeline` (see `data-access`). For SQL Server, filter retries on `SqlException.Number` (or use `SqlConfigurableRetryFactory`) — `SqlException` doesn't override `DbException.IsTransient`, which is always `false`.
+- Non-HTTP resilience (external SDKs, RabbitMQ ops, anything flaky): **Polly v8** `ResiliencePipeline` via `AddResiliencePipeline` (Polly.Extensions) — never hand-rolled retry/`Task.Delay` loops, and use the v8 pipeline API, not the legacy v7 `Policy` API. EF's `EnableRetryOnFailure` already covers DB transients for **EF only** — don't double-wrap it in Polly; standalone Dapper calls need a Polly v8 `ResiliencePipeline` (see `data-access`). For SQL Server, filter retries on `SqlException.Number` (or use `SqlConfigurableRetryFactory`) — `SqlException` doesn't override `DbException.IsTransient`, which is always `false`. Exception: SDKs that already retry rate limits themselves (e.g. Discord.Net's built-in 429 handling — see `discord`) aren't wrapped in a second retry layer.
 - Keyed services for multiple implementations: `AddKeyedSingleton<IStore>("redis", ...)`.
 - **Lifetimes**: scoped for anything touching the `DbContext` or per-request state; singleton for stateless services (`IFusionCache`, `NpgsqlDataSource`, options-backed services); transient only for cheap stateless helpers. Never capture a scoped service in a singleton — background services resolve scopes via `IServiceScopeFactory`.
 - **Errors are never swallowed**: an empty `catch` (or catch-and-continue without logging) is a review failure. Log with context and rethrow, handle meaningfully, or let the global `IExceptionHandler` translate it.
@@ -150,11 +150,11 @@ Rules:
 | Sync-over-async (`.Result`) | Async all the way; it deadlocks and starves the pool |
 | Reflection JSON on hot paths | `JsonSerializerContext` source generation |
 | Catch-all try/catch in handlers | Global `IExceptionHandler` + ProblemDetails |
-| `Task.Run` in request handlers | It wastes a pool thread; just await |
+| `Task.Run` in request handlers | It wastes a pool thread; just await (exception: work that must outlive the response, e.g. a deferred Discord interaction — see `discord`) |
 | Missing `CancellationToken` | Thread it through every async call |
 | Adding MediatR | If a mediator is warranted at all: martinothamar/Mediator (source-generated); MediatR is reflection-based and commercial since v13 |
 | NLog/log4net/`Console.WriteLine` logging | Serilog behind `ILogger<T>` — the only sanctioned logging framework |
-| Newtonsoft.Json anywhere | System.Text.Json with source generation — no exceptions in new code |
+| Newtonsoft.Json anywhere | System.Text.Json with source generation — no exceptions in new code (the transitive dependency of Discord.Net is accepted — see `discord`) |
 | Hand-rolled retry loops (`for` + `Task.Delay`) | Polly v8 `ResiliencePipeline` (or the standard resilience handler for HTTP) |
 | Empty `catch` / silently swallowed exception | Log with context + rethrow, or handle meaningfully — silence is a review failure |
 | `$"interpolated {value}"` into `_logger` | Message template with named placeholders — keeps logs structured and cheap |
