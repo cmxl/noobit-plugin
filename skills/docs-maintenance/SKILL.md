@@ -23,17 +23,22 @@ docs/
   messaging.md           # exchanges, queues, events (only if RabbitMQ used)
   features/
     <feature-name>.md    # one per non-trivial feature: purpose, flow, decisions
-  adr/
-    0001-<decision>.md   # architecture decision records, numbered, never edited after acceptance
+  adr/                   # decision records — owned by noobit:adr (date-named, generated index.md)
+  rfc/                   # design proposals — owned by noobit:rfc (date-named, generated index.md)
 ```
+
+ADRs and RFCs are **not** written by hand under this skill: their format, file naming
+(`YYYY-MM-DD-kebab-title.md`, no numbers), status lifecycle and generated `index.md` belong to the
+`adr` and `rfc` skills (authored via `/noobit:adr` / `/noobit:rfc`, tech-lead agent).
 
 Scale down for small projects (README.md + architecture.md minimum) — but the index rule always holds.
 
 ## Cross-reference rules
 
-1. `docs/README.md` links **every** doc; a doc not in the index is lost.
-2. Each doc starts with a one-line purpose and ends with a `## Related` section linking sibling docs *in both directions* (if `api.md` links `security.md`, `security.md` links back).
-3. Relative links only (`[Security](security.md)`, `[ADR-0003](adr/0003-caching.md)`); link to headings with anchors when pointing at a section.
+1. `docs/README.md` links **every** doc; a doc not in the index is lost. For `adr/` and `rfc/` it links
+   their generated `index.md` once — not the individual records.
+2. Each doc starts with a one-line purpose and ends with a `## Related` section linking sibling docs *in both directions* (if `api.md` links `security.md`, `security.md` links back). **Exception:** ADR/RFC records — accepted records are immutable apart from their status line, so they get no back-links; link *to* them from the docs that depend on the decision.
+3. Relative links only (`[Security](security.md)`, `[Use FusionCache](adr/2026-07-11-use-fusioncache.md)`); link to headings with anchors when pointing at a section.
 4. Link code by path in backticks (`src/App.Api/Features/Orders/`) — paths get stale-checked, line numbers don't.
 5. When renaming/removing a doc: `grep` the whole `docs/` tree for the old filename and fix every reference.
 
@@ -72,7 +77,8 @@ Keep diagrams small (≤ ~12 nodes) — two focused diagrams beat one wall chart
 | Schema change | `data-model.md` ER diagram |
 | Auth/cookie/header change | `security.md` |
 | New env var / config key | `deployment.md`, `getting-started.md` |
-| Significant tech choice | new ADR (context → decision → consequences) |
+| Significant tech choice | new ADR via `/noobit:adr` (tech-lead agent) |
+| Up-front design for a large change | RFC via `/noobit:rfc` |
 
 The `docs-maintainer` agent / `/docs-sync` command automates this: it diffs the working tree, maps changes through this table, and updates the affected files + index + back-links.
 
@@ -85,7 +91,8 @@ The `docs-maintainer` agent / `/docs-sync` command automates this: it diffs the 
 | One-way links | `## Related` sections link both directions |
 | ASCII-art / image-file diagrams | Mermaid in the markdown |
 | Restating code line-by-line | Document intent, flows, and decisions — not syntax |
-| Editing accepted ADRs | New ADR that supersedes (link both) |
+| Editing accepted ADRs | New ADR that supersedes it (`noobit:adr` — only the old record's status line changes) |
+| Hand-written, numbered ADRs (`0001-…`) | `/noobit:adr` — date-named records + generated index |
 
 ## Official docs — verify, don't guess
 

@@ -24,6 +24,8 @@ The order in `Program.cs` is the invocation order (reverse for responses) and is
 ```csharp
 var app = builder.Build();
 
+app.UseForwardedHeaders();       // 0. behind nginx: first, so scheme/IP are right for everything below
+                                 //    (KnownIPNetworks/KnownProxies config: see nginx-deploy)
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler();   // 1. catches everything downstream

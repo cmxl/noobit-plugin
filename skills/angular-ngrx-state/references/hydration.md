@@ -25,7 +25,8 @@ Whatever the approach, these apply:
   `isPlatformBrowser(inject(PLATFORM_ID))` (or the simpler `typeof localStorage !== 'undefined'`).
   Writing to storage during server rendering will throw.
 - **Whitelist, don't persist everything.** Persist only the slices that should survive a reload
-  (filters, auth, cart, UI prefs). Never blindly persist `isLoading`, transient errors, or
+  (filters, cart, UI prefs). **Never auth/user state** — the session lives in an HttpOnly cookie and
+  "who am I" is fetched from the BFF's `/api/me` on startup (`bff-security`). Never blindly persist `isLoading`, transient errors, or
   server-owned entity collections you'll re-fetch anyway.
 - **Version the storage key.** Suffix the key (`app_state_v2`) and bump it when the state shape
   changes, so old persisted blobs don't rehydrate into a new shape. Always merge persisted data
@@ -174,8 +175,8 @@ the major to Angular (Angular 21 → `@angular-architects/ngrx-toolkit@21.x`).
 ```ts
 import { withStorageSync, withSessionStorage } from '@angular-architects/ngrx-toolkit';
 
-signalStore(withState({ name: 'John' }), withStorageSync('user'));                    // localStorage
-signalStore(withState({ name: 'John' }), withStorageSync('user', withSessionStorage()));
+signalStore(withState({ theme: 'light' }), withStorageSync('prefs'));                   // localStorage
+signalStore(withState({ theme: 'light' }), withStorageSync('prefs', withSessionStorage()));
 signalStore(withState({ cart: [] }), withStorageSync({ key: 'cart', select: (s) => ({ cart: s.cart }) }));
 ```
 

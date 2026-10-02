@@ -73,7 +73,7 @@ Smaller build context and fewer spurious cache busts. A missing `.dockerignore` 
 | Chiseled but needs ICU/tzdata | `aspnet:10.0-noble-chiseled-extra` |
 | Native AOT binary | `runtime-deps` final stage, SDK `-aot` build stage |
 
-Chiseled/distroless: no shell, no package manager, non-root by default — drop the Dockerfile `HEALTHCHECK` (no wget and no shell to run it) and probe `/health` externally, or copy in a tiny AOT probe binary and invoke it exec-form. Trimming / ReadyToRun / NativeAOT trade-offs (image size and cold start vs build time and compatibility): decision matrix in [references/best-practices.md](references/best-practices.md).
+Chiseled/distroless: no shell, no package manager, non-root by default — drop the Dockerfile `HEALTHCHECK` (no wget and no shell to run it) and probe `/health/live` externally, or copy in a tiny AOT probe binary and invoke it exec-form. Trimming / ReadyToRun / NativeAOT trade-offs (image size and cold start vs build time and compatibility): decision matrix in [references/best-practices.md](references/best-practices.md).
 
 ## Compose skeleton (reverse proxy not shown — see `nginx-deploy`)
 
@@ -91,19 +91,33 @@ services:
       redis: { condition: service_healthy }
     networks: [internal]
   db:
-    image: postgres:17
-    volumes: [dbdata:/var/lib/postgresql/data]
+    image: postgres:18
+    # 18+ images keep data in /var/lib/postgresql/18/docker — mount the parent, not .../data
+    volumes: [dbdata:/var/lib/postgresql]
     environment: { POSTGRES_PASSWORD: ${DB_PASSWORD} }
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 10s }
     networks: [internal]
   redis:
     image: redis:8
-    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    # cache only: evicts and has no persistence — never Data Protection keys or other must-keep data
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
     healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 10s }
     networks: [internal]
 networks: { internal: {} }
 volumes: { dbdata: {} }
 ```
+
+**Local dev overrides** live in `compose.dev.yaml` (published db/redis ports, bind mounts). Developers
+load it through their gitignored local `.env`: `COMPOSE_FILE=compose.yaml:compose.dev.yaml` (`;` as
+separator on Windows) — `.env.example` ships that line commented, with a note. The server's `.env`
+doesn't set it, so a plain `docker compose up` there can never publish dev ports. Don't use the
+auto-loaded `compose.override.yaml` name — it is picked up on the server too if the file is ever copied
+there. nginx and certbot carry `profiles: [prod]` (see `nginx-deploy`): an overlay can't remove
+services, a profile can keep them off a dev machine. The server's `.env` sets `COMPOSE_PROFILES=prod`.
+
+**Postgres 18 volume path:** the 18 entrypoint detects an old data layout (a `postgres:17` volume at
+`/var/lib/postgresql/data`) and refuses to start. A major upgrade always needs dump/restore or
+`pg_upgrade` into the new `/var/lib/postgresql` mount — never just bump the tag.
 
 In production the nginx + certbot services from `nginx-deploy` join this file; **only nginx publishes ports** (80/443) — never db/redis/rabbit. Secrets via a gitignored `.env` or compose `secrets:` — never in the compose file or image. RabbitMQ when needed: `rabbitmq:4-management`, health `rabbitmq-diagnostics -q ping`, management UI bound to localhost only.
 

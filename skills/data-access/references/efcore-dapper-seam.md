@@ -145,18 +145,20 @@ await writer.CompleteAsync(ct);   // no Complete => rollback on dispose
 **SQLite** — no bulk API; the docs' pattern is one transaction + one reused parameterized command (subsequent executions reuse the first compilation):
 
 ```csharp
-await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
-var cmd = conn.CreateCommand();
+// synchronous on purpose: Microsoft.Data.Sqlite's async methods run synchronously anyway
+using var tx = conn.BeginTransaction();          // BEGIN IMMEDIATE by default — takes the write lock up front
+using var cmd = conn.CreateCommand();
 cmd.Transaction = tx;
 cmd.CommandText = "INSERT INTO measurements (sensor_id, value) VALUES ($sensorId, $value)";
 var pSensor = cmd.Parameters.Add("$sensorId", SqliteType.Integer);
 var pValue  = cmd.Parameters.Add("$value", SqliteType.Real);
 foreach (var row in rows)
 {
+    ct.ThrowIfCancellationRequested();
     (pSensor.Value, pValue.Value) = (row.SensorId, row.Value);
-    await cmd.ExecuteNonQueryAsync(ct);
+    cmd.ExecuteNonQuery();
 }
-await tx.CommitAsync(ct);
+tx.Commit();
 ```
 
 **Medium batches (any provider)** — EF `AddRange` + one `SaveChangesAsync` is fine into the low thousands: EF batches all pending changes into minimal roundtrips. Batch size is provider-tuned — SQL Server defaults to at most **42 statements per batch** (measured optimum; batching is skipped below 4 statements) — and adjustable via `MinBatchSize`/`MaxBatchSize` on the provider options; benchmark before changing. `ExecuteUpdateAsync`/`ExecuteDeleteAsync` are the set-based escape hatch: per the docs they "are completely unaware of EF's change tracker", execute immediately, don't batch with each other, and start **no implicit transaction** — wrap multiple calls (or mixes with `SaveChanges`) in an explicit transaction, and expect stale tracked entities afterwards.

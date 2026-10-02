@@ -162,6 +162,9 @@ the first number you need when tuning durations.
 - **Persistence off**: RDB and AOF both disabled (`save ""`, `appendonly no`). The persistence
   docs state it plainly: "You can disable persistence completely. This is sometimes used when
   caching." Everything in a FusionCache L2 is reconstructible from the source of truth.
+- **Only reconstructible data in this Redis.** Anything that must survive a restart or eviction —
+  ASP.NET Core Data Protection keys above all (`bff-security`) — goes to the database or a separate,
+  persistent `noeviction` Redis, never into the cache instance.
 - **Keyspace notifications**: leave `notify-keyspace-events` at its default (disabled, "the
   feature uses some CPU power"). FusionCache does not use them — the backplane runs on its own
   pub/sub channel.

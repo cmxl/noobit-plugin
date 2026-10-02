@@ -54,7 +54,9 @@ ssl_session_timeout 1d;
 ssl_session_cache shared:SSL:10m;
 ssl_session_tickets off;
 # dhparam only if you serve DHE suites; Mozilla ships a standard 2048-bit ffdhe group.
-add_header Strict-Transport-Security "max-age=63072000" always;  # only once the cert setup is proven
+# HSTS is owned by the ASP.NET Core app (UseHsts, see bff-security) — don't also send it here,
+# or browsers get the header twice. Only for non-.NET upstreams:
+# add_header Strict-Transport-Security "max-age=63072000" always;
 ```
 
 Do **not** configure `ssl_stapling` for Let's Encrypt certs — LE's OCSP responders were shut down

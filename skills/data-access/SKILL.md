@@ -7,7 +7,7 @@ description: Use when writing database code in .NET — choosing between EF Core
 
 ## Overview
 
-EF Core is the default (change tracking, migrations, LINQ safety). Dapper is the escalation for **measured** hot paths. Both always: parameterized, async with `CancellationToken`, project to DTOs.
+EF Core is the default (change tracking, migrations, LINQ safety). Dapper is the escalation for **measured** hot paths. Both always: parameterized, async with `CancellationToken`, project to DTOs. **SQLite is the exception to async:** Microsoft.Data.Sqlite's async methods run synchronously (documented — avoid them), so SQLite data paths are synchronous internally (see `sqlite`).
 
 ## Decision table — which tool for which operation
 

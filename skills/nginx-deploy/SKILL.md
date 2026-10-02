@@ -14,6 +14,7 @@ A single **nginx** reverse proxy terminates TLS with **Let's Encrypt** certs in 
 ```yaml
   nginx:
     image: nginx:stable
+    profiles: [prod]       # server .env: COMPOSE_PROFILES=prod — keeps nginx off dev machines
     # periodic reload picks up renewed Let's Encrypt certs — the certbot container has no
     # docker CLI/socket, so a certbot --deploy-hook can NOT reload nginx from over there
     command: ["/bin/sh", "-c", "while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;'"]
@@ -26,6 +27,7 @@ A single **nginx** reverse proxy terminates TLS with **Let's Encrypt** certs in 
     networks: [internal]
   certbot:
     image: certbot/certbot
+    profiles: [prod]
     entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $${!}; done"]
     volumes:
       - certbot-webroot:/var/www/certbot

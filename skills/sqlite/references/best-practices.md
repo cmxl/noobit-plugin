@@ -101,7 +101,7 @@ The docs now steer you to `PRAGMA optimize` instead of hand-run ANALYZE — it r
 ### Transactions and write batching
 
 - Autocommit means every standalone statement is its own transaction (its own commit/fsync). Batching N inserts in one transaction is the single biggest SQLite write optimization.
-- `BEGIN DEFERRED` (default) starts as a read transaction and upgrades on the first write — the upgrade can fail with `SQLITE_BUSY` if another writer got there first. For transactions you *know* will write, `BEGIN IMMEDIATE` takes the write lock up front, so contention surfaces at BEGIN where `busy_timeout` can wait it out instead of failing mid-transaction.
+- In Microsoft.Data.Sqlite, `BeginTransaction()` already sends `BEGIN IMMEDIATE`; the following matters for raw SQL, `BeginTransaction(deferred: true)` and other clients. `BEGIN DEFERRED` (SQLite's default) starts as a read transaction and upgrades on the first write — the upgrade can fail with `SQLITE_BUSY` if another writer got there first. For transactions you *know* will write, `BEGIN IMMEDIATE` takes the write lock up front, so contention surfaces at BEGIN where `busy_timeout` can wait it out instead of failing mid-transaction.
 - `BEGIN EXCLUSIVE` additionally blocks readers in non-WAL modes; rarely needed under WAL.
 
 ### Type affinity and data-equivalence comparisons (datatype3.html)
@@ -133,7 +133,7 @@ tx.Commit();
 ## Anti-patterns
 
 - Row-by-row autocommit writes (one fsync per statement) instead of one transaction per batch.
-- Letting `SQLITE_BUSY` bubble up as an exception: missing `busy_timeout`, or a DEFERRED transaction upgrading to write mid-flight — use `BEGIN IMMEDIATE` for writers.
+- Letting `SQLITE_BUSY` bubble up as an exception: missing `busy_timeout`, or a DEFERRED transaction upgrading to write mid-flight — use `BEGIN IMMEDIATE` for writers (the .NET provider's default, unless `deferred: true`).
 - Long-lived read transactions (or never-disposed readers) under WAL — checkpoint starvation and unbounded `-wal` growth.
 - Two indexes where one is a left prefix of the other; gaps in composite-index usage; more than one range column expected to use the index.
 - Expecting `LIKE '%abc'` or a mismatched-collation `LIKE 'abc%'` to use an index.

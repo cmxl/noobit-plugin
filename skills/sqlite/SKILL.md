@@ -12,7 +12,7 @@ Provider-specific SQLite knowledge: performance workflows, index design, join co
 ## Performance improvement workflow
 
 1. **Transactions first.** The most common SQLite fix: batch writes into one transaction. N individual inserts = N fsyncs; one transaction = one. This routinely turns minutes into milliseconds.
-2. **Pragmas baseline**: `journal_mode=WAL` (readers don't block the writer), `synchronous=NORMAL` (safe with WAL), `busy_timeout` set (never let `SQLITE_BUSY` bubble as a crash). `PRAGMA optimize;` before closing short-lived connections; long-lived connections run `PRAGMA optimize=0x10002;` on open plus periodic `PRAGMA optimize;`.
+2. **Pragmas baseline**: `journal_mode=WAL` (readers don't block the writer), `synchronous=NORMAL` (safe with WAL), `busy_timeout` set for raw SQLite clients (never let `SQLITE_BUSY` bubble as a crash). **In .NET**, Microsoft.Data.Sqlite already retries busy/locked errors until `CommandTimeout`/`Default Timeout` (default 30 s) — tune that connection-string keyword first, and note `BeginTransaction()` already issues `BEGIN IMMEDIATE` (only `BeginTransaction(deferred: true)` and raw `BEGIN` SQL start deferred). `PRAGMA optimize;` before closing short-lived connections; long-lived connections run `PRAGMA optimize=0x10002;` on open plus periodic `PRAGMA optimize;`.
 3. **Measure**: `EXPLAIN QUERY PLAN <query>` — look for `SCAN` on large tables where `SEARCH ... USING INDEX` is expected, and `USE TEMP B-TREE` for ORDER BY/GROUP BY that an index could satisfy. The CLI's `.expert` mode suggests indexes for a query.
 4. **Statistics**: `ANALYZE` (with `SQLITE_ENABLE_STAT4` where available) so the planner has real selectivity data; re-run after data-shape changes.
 5. **Fix one thing**, re-check the plan. In hot loops, reuse the same parameterized `SqliteCommand` object — subsequent executions reuse the first compilation.
@@ -60,7 +60,7 @@ SELECT 'only_in_new' AS side, * FROM (<new query> EXCEPT <old query>);
 | Mistake | Fix |
 |---|---|
 | Row-by-row inserts, no transaction | One transaction per batch — the classic SQLite fix |
-| `SQLITE_BUSY` crashes under concurrency | `busy_timeout` pragma + WAL; one writer by design |
+| `SQLITE_BUSY` crashes under concurrency | WAL + one writer by design; in .NET raise `Default Timeout` (the provider retries), elsewhere `busy_timeout` |
 | Treating it as a network DB (chatty N+1 fear) | Local N+1 is cheap — but transactions still matter |
 | `AUTOINCREMENT` by default | Plain `INTEGER PRIMARY KEY` |
 | Relying on type affinity coercion | Declare and insert consistent types |

@@ -63,12 +63,15 @@ must exist there. Options, in order of preference for this stack:
 
 1. **Full aspnet image**: install wget once (SKILL.md pattern) and use
    `HEALTHCHECK CMD wget -qO- http://localhost:8080/health/live || exit 1`. Tune
-   `--start-period` (grace window during app start) and `--retries`; newer Docker engines also
+   `--start-period` (grace window during app start) and `--retries` — `/health/live` must have no
+   dependency checks (see `aspnet-backend`), or a DB outage becomes a restart loop; newer Docker engines also
    support `--start-interval` for faster probing during startup.
 2. **Chiseled**: there is no shell and no wget, and exec-form `CMD ["..."]` still needs a binary in
-   the image. Either drop the Docker-level healthcheck and probe `/health` externally (nginx
+   the image. Either drop the Docker-level healthcheck and probe `/health/live` (restarts) / `/health/ready`
+   (routing) externally (nginx
    `proxy_next_upstream`, uptime monitor) — the SKILL.md default — or compile a tiny AOT
-   healthcheck executable and copy it in, invoking it exec-form.
+   healthcheck executable and copy it in, invoking it exec-form. External probes use
+   `/health/ready` for routing decisions and `/health/live` for restarts.
 3. Never mark `db`/`redis` dependencies healthy by sleep hacks — use compose
    `depends_on: { condition: service_healthy }` against real healthchecks (`pg_isready`,
    `redis-cli ping`), as in SKILL.md.
@@ -91,9 +94,10 @@ must exist there. Options, in order of preference for this stack:
   and DB so one runaway container can't OOM the host.
 - **Profiles** (`profiles: ["ops"]`) gate optional services (pgadmin, one-shot certbot issuance,
   migrations) out of the default `up`; activate with `--profile ops` or `COMPOSE_PROFILES`.
-- **Environment split**: keep `compose.yaml` as the production-shaped base and layer overrides —
-  `docker compose -f compose.yaml -f compose.override.dev.yaml up` for dev (bind mounts, exposed
-  ports), plain base in prod. Docker's guidance: remove code bind-mounts in production, adjust
+- **Environment split**: keep `compose.yaml` as the production-shaped base and layer
+  `compose.dev.yaml` for dev (bind mounts, exposed ports), selected via `COMPOSE_FILE` in the
+  developer's local `.env` (Compose reads `COMPOSE_FILE` from `.env` — pre-defined environment
+  variables docs); plain base in prod. Docker's guidance: remove code bind-mounts in production, adjust
   restart policy and log verbosity. Redeploy one service without bouncing its deps:
   `docker compose build app && docker compose up --no-deps -d app`.
 

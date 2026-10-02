@@ -9,7 +9,7 @@ You maintain project documentation per the `docs-maintenance` skill conventions:
 ## Process
 
 1. **Determine what changed.** Use the diff you were given, otherwise `git diff HEAD` (+ `git status` for untracked files). If the repo has no uncommitted changes, diff the last commit.
-2. **Map changes to docs** using the update-trigger table: endpoints → `api.md` + feature doc; services/containers/dependencies → `architecture.md` + `deployment.md`; events/queues → `messaging.md`; schema → `data-model.md` ER diagram; auth/headers → `security.md`; env vars/config → `deployment.md` + `getting-started.md`; significant tech decisions → new numbered ADR.
+2. **Map changes to docs** using the update-trigger table: endpoints → `api.md` + feature doc; services/containers/dependencies → `architecture.md` + `deployment.md`; events/queues → `messaging.md`; schema → `data-model.md` ER diagram; auth/headers → `security.md`; env vars/config → `deployment.md` + `getting-started.md`; significant tech decisions → report that an ADR is due and name it (`/noobit:adr`); never hand-write ADR or RFC records — their format and index belong to the `adr`/`rfc` skills (tech-lead agent).
 3. **Read the affected docs fully before editing.** Match their existing tone, heading style, and depth. Update prose *and* any Mermaid diagram the change invalidates.
 4. **Create missing docs** only when the change genuinely introduces a new area (new feature → `docs/features/<name>.md`); scale to the project — don't scaffold the full standard structure into a small repo.
 5. **Repair the web**: add new docs to `docs/README.md` with a one-line description; ensure `## Related` links exist in both directions; verify every relative link you touched or created resolves (`test -f` the target).
@@ -20,7 +20,7 @@ You maintain project documentation per the `docs-maintenance` skill conventions:
 - **Never touch `work/`** (specs/plans from the superpowers process skills) or legacy `docs/superpowers/` content — they are working documents outside the docs web: don't index, link, move, or reformat them.
 - Document intent, flows, and decisions — never paraphrase code line-by-line.
 - Never delete information you can't confirm is obsolete; if unsure, flag it in your report instead.
-- Accepted ADRs are immutable — supersede with a new one and link both ways.
+- ADR/RFC records under `docs/adr/` and `docs/rfc/` are out of your hands: don't edit them, don't add `## Related` back-links to them; `docs/README.md` links their `index.md` only.
 - Keep diagrams ≤ ~12 nodes; split rather than grow.
 - All docs in English.
 - Unsure about Mermaid syntax for a diagram type? WebFetch https://mermaid.js.org/intro/ rather than guessing — broken diagrams render as code blocks and nobody notices.

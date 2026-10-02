@@ -117,7 +117,15 @@ Rules:
 - **Async**: `async`/`await` all the way; no `.Result`/`.Wait()`/`GetAwaiter().GetResult()`; `ValueTask` on hot interfaces; `IAsyncEnumerable<T>` for streams.
 - **Allocations**: `Span<T>`/`Memory<T>` for parsing, `ArrayPool<T>`/`ObjectPool<T>` in hot loops, `StringBuilder` pooling, avoid LINQ in per-request hot paths.
 - **Server**: Kestrel behind nginx — nginx terminates TLS/HTTP2 and proxies upstream over HTTP/1.1; response compression only at nginx (don't double-compress).
-- **Startup**: `builder.Services.AddRequestTimeouts()`, health checks at `/health/live` and `/health/ready` (`AddHealthChecks` + Redis/DB/Rabbit checks).
+- **Startup**: `builder.Services.AddRequestTimeouts()` + `app.UseRequestTimeouts()`. Health checks: `/health/live` answers "is the process up" and has **no dependency checks** (it drives container restarts — a DB outage must not restart every app instance); `/health/ready` runs the dependency checks:
+
+  ```csharp
+  builder.Services.AddHealthChecks()
+      .AddNpgSql(dbConnectionString, tags: ["ready"])  // AspNetCore.HealthChecks.NpgSql (or .SqlServer)
+      .AddRedis(redisConnectionString, tags: ["ready"]); // AspNetCore.HealthChecks.Redis; Rabbit likewise
+  app.MapHealthChecks("/health/live", new() { Predicate = _ => false }).AllowAnonymous();
+  app.MapHealthChecks("/health/ready", new() { Predicate = c => c.Tags.Contains("ready") }).AllowAnonymous();
+  ```
 - **Observability**: OpenTelemetry (traces + metrics) with OTLP exporter. **Serilog is the logging framework** (`Serilog.AspNetCore`, Serilog 4.x): two-stage init (bootstrap logger for startup failures, then full config from `appsettings`), `UseSerilogRequestLogging()` for one structured event per request instead of the noisy defaults, JSON console sink in containers. Application code depends on `ILogger<T>` + `LoggerMessage` source-gen only — Serilog is the backend, not an API to code against (no static `Log.` calls in app code).
 
 ## Common mistakes

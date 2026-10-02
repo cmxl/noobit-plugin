@@ -8,7 +8,7 @@ Generate or update production deployment assets for the current project, per the
 1. **Inventory the project**: detect the .NET host project(s), Angular app, database provider, Redis/RabbitMQ usage (check csproj packages, appsettings, existing compose files). Base everything on what the project actually uses — don't add services it doesn't need.
 2. **Create/refresh**, preserving any existing customizations you find (read existing files first; merge, don't clobber):
    - Multi-stage `Dockerfile` (non-root, healthcheck, Angular build stage if a frontend exists)
-   - `compose.yaml` (internal network, healthchecks, no published DB/cache ports) + `compose.override.yaml` for local dev
+   - `compose.yaml` (internal network, healthchecks, no published DB/cache ports) + `compose.dev.yaml` for local dev (loaded only via `COMPOSE_FILE` in a developer's local `.env` — never on the server; see `docker`)
    - `nginx/conf.d/<domain>.conf` (TLS, HTTP→HTTPS redirect, ACME webroot, proxy headers, websocket support)
    - certbot service + first-issuance instructions
    - `.env.example` covering every env var referenced

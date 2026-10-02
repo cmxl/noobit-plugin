@@ -33,7 +33,7 @@ builder.Services.AddAuthorization();
 - Password hashing: ASP.NET Core Identity's hasher (PBKDF2) or `Isopoh.Cryptography.Argon2`; never roll your own.
 - Login endpoint: rate-limited, lockout after N failures, uniform error message ("invalid credentials") regardless of which part failed, no user enumeration on registration/reset.
 - Session versioning: stamp a `SecurityStamp` claim and validate in `OnValidatePrincipal` so password change / "log out everywhere" kills existing cookies.
-- **Data protection keys must be persisted and shared across instances** (`PersistKeysToStackExchangeRedis`) or cookies die on every deploy/scale-out.
+- **Data protection keys must be persisted and shared across instances** or cookies die on every deploy/scale-out. Default: `PersistKeysToDbContext<T>` in the app database (durable, backed up). **Not** in the cache Redis — it evicts (`allkeys-lru`) and has persistence off (`fusioncache-redis`, `docker`), and losing the key ring logs every user out.
 
 ## CSRF — required because cookies
 
@@ -82,8 +82,12 @@ https://app.example.com/api/gw/... → YARP → downstream services (BFF attache
 ## Security headers & middleware order
 
 ```csharp
+// builder: HSTS is owned by the app (nginx doesn't send it) — UseHsts alone is only 30 days, no subdomains
+builder.Services.AddHsts(o => { o.MaxAge = TimeSpan.FromDays(730); o.IncludeSubDomains = true; });
+// o.Preload = true only as a deliberate opt-in: preload-list removal takes months
+
 app.UseForwardedHeaders();       // nginx in front — X-Forwarded-For/Proto (see nginx-deploy)
-app.UseHsts();
+app.UseHsts();                   // non-development only
 // CSP etc. via middleware:
 ctx.Response.Headers.ContentSecurityPolicy =
     "default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
@@ -105,7 +109,7 @@ All endpoints `RequireAuthorization()` by default; opt **out** with `AllowAnonym
 | API returns 302 to login page | 401/403 via cookie events (above) |
 | `SameSite=None` "to make it work" | Fix same-origin layout instead |
 | Antiforgery skipped on "internal" POSTs | Every state-changing browser-facing endpoint validates |
-| Data protection keys in container FS | Persist to Redis; cookies survive redeploys |
+| Data protection keys in container FS or the cache Redis | `PersistKeysToDbContext<T>`; cookies survive redeploys, evictions and Redis restarts |
 | Downstream API reachable from internet | Private network; only BFF is public |
 | Login error says "user not found" | Uniform errors, rate limit, lockout |
 

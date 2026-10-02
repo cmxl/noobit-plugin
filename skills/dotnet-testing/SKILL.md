@@ -29,7 +29,7 @@ Assert observable behavior (responses, DB state, published messages) — not imp
 // Shared containers per test collection — start once, Respawn between tests.
 public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _db = new PostgreSqlBuilder("postgres:17").Build();
+    private readonly PostgreSqlContainer _db = new PostgreSqlBuilder("postgres:18").Build();
     private readonly RedisContainer _redis = new RedisBuilder("redis:8").Build();
     private Respawner _respawner = default!;
 
@@ -123,7 +123,7 @@ if ($LASTEXITCODE -ne 0) {
 Only report Docker as unavailable (and integration tests as skipped) if it still isn't up after that. Containers are shared per collection — a full integration suite should boot infrastructure once, not per test class.
 
 Testcontainers rules (per the official best-practices doc):
-- **Pin image versions** (`postgres:17`, never `latest` or the module default).
+- **Pin image versions** (`postgres:18` — same major as production, never `latest` or the module default).
 - Never assign static container names or static host-port bindings — random names/ports are what make parallel and CI runs safe; read endpoints via `GetConnectionString()`/`GetMappedPublicPort()`.
 - Connect via the container's `Hostname` property, not `localhost`.
 - Container-to-container communication goes through networks + `WithNetworkAliases`, not mapped host ports.

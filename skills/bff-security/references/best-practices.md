@@ -57,13 +57,18 @@ public sealed class SecurityStampEvents(IUserStore users) : CookieAuthentication
 ```csharp
 builder.Services.AddDataProtection()
     .SetApplicationName("myapp")                                   // stable across deployments & instances
-    .PersistKeysToStackExchangeRedis(redisMux, "DataProtection-Keys")
+    .PersistKeysToDbContext<AppDbContext>()                        // AppDbContext : IDataProtectionKeyContext
     .ProtectKeysWithCertificate(cert);                             // see warning below
 ```
 
-- Package: `Microsoft.AspNetCore.DataProtection.StackExchangeRedis`. Alternatives: `PersistKeysToFileSystem` on a mounted volume, `PersistKeysToDbContext<T>` (EF Core), `PersistKeysToAzureBlobStorage`.
+- Package: `Microsoft.AspNetCore.DataProtection.EntityFrameworkCore`; the context implements
+  `IDataProtectionKeyContext` (`DbSet<DataProtectionKey> DataProtectionKeys`) and gets a migration.
+  The app database is already durable and backed up — the right home for the key ring.
+- Alternatives: `PersistKeysToFileSystem` on a mounted volume (single host), `PersistKeysToAzureBlobStorage`,
+  `PersistKeysToStackExchangeRedis` **only** on a dedicated Redis with persistence and `noeviction` —
+  never the FusionCache Redis, which evicts and runs without persistence by design.
 - **Documented warning:** specifying an explicit key location *deregisters encryption-at-rest* — keys are then stored in plaintext unless you add `ProtectKeysWith*` (certificate or Azure Key Vault). Do both in production.
-- **Redis caveat (documented):** Redis does not persist to disk by default; a Redis restart can drop the key ring and invalidate every cookie and XSRF token. Enable Redis persistence (AOF/RDB) for the key database.
+- **Redis caveat (documented):** Redis does not persist to disk by default; a Redis restart — or an eviction under `allkeys-lru` — drops the key ring and invalidates every cookie and XSRF token.
 - `SetApplicationName` matters because the default app discriminator is the content-root path — identical in a container image, but set it explicitly so local/dev/staging and multi-instance deployments agree. Default key lifetime is 90 days (`SetDefaultKeyLifetime` to change).
 
 ### Rate limiting (Microsoft Learn: rate limiting middleware)
@@ -94,7 +99,7 @@ authGroup.RequireRateLimiting("auth");                  // /api/auth/* gets the 
 
 ### Security headers with a verified Angular CSP (OWASP HTTP Headers + CSP sheets, angular.dev)
 
-OWASP-recommended values: `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload` · `X-Content-Type-Options: nosniff` · `Referrer-Policy: strict-origin-when-cross-origin` · `Permissions-Policy: geolocation=(), camera=(), microphone=()` (deny what you don't use) · `Cross-Origin-Opener-Policy: same-origin` · `Cross-Origin-Resource-Policy: same-site` · remove `Server`/`X-Powered-By` · `Cache-Control: no-store` on authenticated API responses.
+OWASP-recommended values: `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload` · `X-Content-Type-Options: nosniff` · `Referrer-Policy: strict-origin-when-cross-origin` · `Permissions-Policy: geolocation=(), camera=(), microphone=()` (deny what you don't use) · `Cross-Origin-Opener-Policy: same-origin` (pages that open a payment/OAuth popup, e.g. PayPal checkout, need `same-origin-allow-popups` — see `paypal`) · `Cross-Origin-Resource-Policy: same-site` · remove `Server`/`X-Powered-By` · `Cache-Control: no-store` on authenticated API responses.
 
 CSP — angular.dev documents this minimal policy for a new Angular app:
 
@@ -181,7 +186,7 @@ authGroup.MapPost("/login", async Task<Results<Ok, UnauthorizedHttpResult>> (
 | Relying on `SameSite=Strict` instead of tokens | Site-scoped not origin-scoped; subdomains and client-side CSRF bypass it (OWASP) | SameSite **and** antiforgery validation |
 | Calling the API with absolute URLs from Angular | `HttpClient` skips `X-XSRF-TOKEN` on absolute URLs → mysterious 400s | Relative `/api/...` paths only |
 | `PersistKeysTo*` without `ProtectKeysWith*` | Explicit persistence disables encryption-at-rest (documented) | Add certificate/Key Vault protection |
-| Data protection keys in default-config Redis | Redis restart drops keys → all sessions and XSRF tokens die | Enable Redis AOF/RDB persistence |
+| Data protection keys in the cache Redis | Restart or LRU eviction drops keys → all sessions and XSRF tokens die | `PersistKeysToDbContext<T>` (or a dedicated persistent `noeviction` Redis) |
 | Sliding expiration with no absolute cap | Active session lives forever; stolen cookie too | Absolute cap via issued-at claim in `ValidatePrincipal` (OWASP: 4–8 h) |
 | Logout that only deletes the cookie | Stolen/other-device copies stay valid until expiry | Bump security stamp; `ValidatePrincipal` rejects old tickets |
 | YARP forwarding `Cookie` downstream | Session cookie leaks to every internal service; replayable | Strip `Cookie`/`X-XSRF-TOKEN` in a request transform; attach service credential |

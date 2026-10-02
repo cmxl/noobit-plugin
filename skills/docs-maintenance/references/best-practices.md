@@ -33,30 +33,11 @@ Practical rules from the framework:
 - Reference describes, it does not instruct. Keep usage examples minimal; put workflows in how-tos.
 - The `docs/README.md` index groups by these needs, so readers self-select by what they are trying to do.
 
-### ADRs (Nygard format, per adr.github.io)
+### ADRs and RFCs
 
-- One record per architecturally significant decision. Sections, in order: **Title** (short noun phrase, imperative decision), **Status**, **Context** (forces, constraints — neutral tone), **Decision** ("We will …"), **Consequences** (all of them: positive, negative, neutral).
-- **Lifecycle**: `proposed → accepted`, later `deprecated` or `superseded by ADR-NNNN`. An accepted ADR is immutable except for its Status line; changing your mind means a **new** ADR that supersedes the old, with links both ways (matches SKILL.md's "never edited after acceptance").
-- Number sequentially, zero-padded filenames (`adr/0007-switch-to-fusioncache.md`); never reuse numbers, even for rejected ADRs.
-- MADR is the maintained richer template (adds options considered / decision drivers); Nygard's five sections are the floor. Add "Options considered" when the trade-off is the point.
-
-Minimal Nygard skeleton:
-
-```markdown
-# ADR-0007: Use FusionCache with Redis L2
-
-## Status
-Accepted (2026-07-11). Supersedes [ADR-0002](0002-imemorycache.md).
-
-## Context
-<forces, constraints, requirements — neutral, no advocacy>
-
-## Decision
-We will <active-voice decision>.
-
-## Consequences
-<positive, negative, and neutral outcomes; follow-up work>
-```
+Owned by the `adr` and `rfc` skills (date-named `YYYY-MM-DD-kebab-title.md`, no numbering, generated
+`index.md`, immutable once accepted except the status line). Don't restate or vary their format here —
+`docs/README.md` links `adr/index.md` and `rfc/index.md`, nothing more.
 
 ### Choosing the diagram type (stable types only)
 
@@ -111,9 +92,9 @@ flowchart TB
 
 ### Link hygiene for cross-referenced markdown
 
-- Relative links only, resolved from the linking file (`security.md`, `adr/0003-caching.md`, `../docs/api.md` never absolute paths or repo URLs — those break in forks and local preview).
+- Relative links only, resolved from the linking file (`security.md`, `adr/2026-07-11-use-fusioncache.md`, `../docs/api.md` — never absolute paths or repo URLs — those break in forks and local preview).
 - Heading anchors: GitHub/GitLab slugify headings (lowercase, spaces→`-`, punctuation dropped). Renaming a heading silently breaks every `#anchor` link to it — grep for the old slug when renaming.
-- Every doc reachable from `docs/README.md`; every cross-reference bidirectional via `## Related` (per SKILL.md). Orphan detection: any `.md` under `docs/` not matched by a grep of the index is a bug.
+- Every doc reachable from `docs/README.md`; every cross-reference bidirectional via `## Related` (per SKILL.md). Orphan detection: any `.md` under `docs/` not matched by a grep of the index is a bug — except records under `adr/` and `rfc/`, which are reached through their generated `index.md`.
 - Reference code by path in backticks, not line numbers; paths are grep-checkable, line numbers rot.
 - On rename/delete: `grep -r "old-name.md" docs/` and fix every hit in the same commit. A CI link checker (e.g. lychee) turns silent rot into a failing build.
 

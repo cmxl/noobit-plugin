@@ -80,7 +80,7 @@ Run tests via `dotnet test`, `dotnet run`, or the built executable directly. MTP
 
 public sealed class PostgresFixture : IAsyncLifetime
 {
-    public PostgreSqlContainer Db { get; } = new PostgreSqlBuilder("postgres:17").Build();
+    public PostgreSqlContainer Db { get; } = new PostgreSqlBuilder("postgres:18").Build();
 
     public async ValueTask InitializeAsync() =>
         await Db.StartAsync(TestContext.Current.CancellationToken);
@@ -102,7 +102,7 @@ public sealed class OrderRepositoryTests(PostgresFixture postgres) // injected, 
 
 ### Testcontainers: modules, wait strategies, reuse
 
-- Prefer module packages over raw `ContainerBuilder` — they ship "pre-configured with best practices" (correct image, wait strategy, `GetConnectionString()`): `new PostgreSqlBuilder("postgres:17").Build()`, then `await container.StartAsync(TestContext.Current.CancellationToken);`.
+- Prefer module packages over raw `ContainerBuilder` — they ship "pre-configured with best practices" (correct image, wait strategy, `GetConnectionString()`): `new PostgreSqlBuilder("postgres:18").Build()`, then `await container.StartAsync(TestContext.Current.CancellationToken);`.
 - Wait strategies (only needed for custom containers or overrides): `Wait.ForUnixContainer()` chained with `UntilInternalTcpPortIsAvailable(port)` / `UntilExternalTcpPortIsAvailable(port)`, `UntilHttpRequestIsSucceeded(...)`, `UntilContainerIsHealthy()`, `UntilMessageIsLogged(...)`, `UntilCommandIsCompleted("pg_isready")`, or a custom `IWaitUntil` via `AddCustomWaitStrategy(...)`. Each accepts options for `Timeout`, `Interval`, `Retries`; `WaitStrategyMode.OneShot` handles run-to-completion containers (migrations).
 
 ```csharp
