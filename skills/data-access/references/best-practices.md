@@ -1,16 +1,17 @@
 # EF Core + Dapper — Best Practices Reference
 
-Verified against official documentation, July 2026. Extends `SKILL.md` (same conventions: net10.0, C# latest, nullable enabled, async with `CancellationToken`, DTO projections for reads, parameterized SQL only). Primary sources: EF Core performance docs, EF Core 10 release notes, Dapper README, Npgsql docs, Microsoft.Data.Sqlite docs — full URL list at the bottom.
+Verified against official documentation, October 2026. Extends `SKILL.md` (same conventions: net10.0, C# latest, nullable enabled, async with `CancellationToken`, DTO projections for reads, parameterized SQL only). Primary sources: EF Core performance docs, EF Core 10 release notes, Dapper README, Npgsql docs, Microsoft.Data.Sqlite docs — full URL list at the bottom.
 
-## Current versions (July 2026)
+## Current versions (verified October 2026 — patch numbers rotate monthly; check nuget.org for the latest patch)
 
 | Package | Version | Notes |
 |---|---|---|
-| Microsoft.EntityFrameworkCore | **10.0.9** (2026-06-09) | EF10 is LTS, released Nov 2025, supported until 2028-11-10. Requires .NET 10; will not run on earlier .NET or .NET Framework. 11.0 previews exist — do not use in production. |
-| Dapper | **2.1.79** (2026-05-16) | Targets net10.0, net8.0, netstandard2.0, net461+. |
-| Npgsql (ADO.NET) | **10.0.3** | `NpgsqlDataSource` is the entry point since Npgsql 7. |
-| Npgsql.EntityFrameworkCore.PostgreSQL | **10.0.3** (2026-07-10) | Pairs with EF Core 10.x. |
-| Microsoft.Data.Sqlite | **10.0.9** (2026-06-09) | Ships on the EF Core release train. |
+| Microsoft.EntityFrameworkCore | **10.0.x** (10.0.12 on 2026-09-08) | EF10 is LTS, released Nov 2025, supported until 2028-11-10. Requires .NET 10; will not run on earlier .NET or .NET Framework. 11.0 is at release candidate (11.0.0-rc.1) — do not use in production. |
+| Dapper | **2.1.x** (2.1.89 on 2026-09-23) | Targets net10.0, net8.0, netstandard2.0, net461+. |
+| Npgsql (ADO.NET) | **10.0.x** (10.0.3 on 2026-05-27) | `NpgsqlDataSource` is the entry point since Npgsql 7. |
+| Npgsql.EntityFrameworkCore.PostgreSQL | **10.0.x** (10.0.3 on 2026-07-10) | Pairs with EF Core 10.x; 11.0.0-rc.1 exists for EF 11 — not for production. |
+| Microsoft.Data.Sqlite | **10.0.x** (10.0.12 on 2026-09-08) | Ships on the EF Core release train. |
+| EFCore.NamingConventions | **10.0.x** (10.0.1 on 2026-01-22) | Provides `UseSnakeCaseNamingConvention()`; major version tracks EF Core. |
 
 ## Established patterns
 
@@ -207,7 +208,9 @@ public async Task<IReadOnlyList<OrderWithCustomer>> GetRecentAsync(int take, Can
 - https://www.npgsql.org/efcore/index.html
 - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/async
 - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/database-errors
-- https://www.nuget.org/packages/Microsoft.EntityFrameworkCore (10.0.9)
-- https://www.nuget.org/packages/Dapper (2.1.79)
-- https://www.nuget.org/packages/Npgsql.EntityFrameworkCore.PostgreSQL (10.0.3)
-- https://www.nuget.org/packages/Microsoft.Data.Sqlite (10.0.9)
+- https://www.nuget.org/packages/Microsoft.EntityFrameworkCore
+- https://www.nuget.org/packages/Dapper
+- https://www.nuget.org/packages/Npgsql
+- https://www.nuget.org/packages/Npgsql.EntityFrameworkCore.PostgreSQL
+- https://www.nuget.org/packages/Microsoft.Data.Sqlite
+- https://www.nuget.org/packages/EFCore.NamingConventions

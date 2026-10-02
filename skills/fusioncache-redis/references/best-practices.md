@@ -1,18 +1,18 @@
 # FusionCache + Redis — Best Practices Reference
 
-Verified against official documentation, July 2026. Primary sources: the FusionCache docs
+Verified against official documentation, July 2026; versions verified October 2026. Primary sources: the FusionCache docs
 (https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/README.md), Redis docs
 (https://redis.io/docs/latest/), and the StackExchange.Redis docs
 (https://stackexchange.github.io/StackExchange.Redis/). Full URL list at the bottom.
 This file extends `SKILL.md` — read that first for the standard wiring and usage pattern.
 
-## Current versions (July 2026)
+## Current versions (verified October 2026)
 
 | Component | Version | Notes |
 |---|---|---|
-| ZiggyCreatures.FusionCache | **2.9.0** (2026-09-22) | Targets netstandard2.0 / net8.0 / net9.0 / net10.0. AOT-compatible since 2.2.0. Verified October 2026. |
-| StackExchange.Redis | **3.0.17** (2026-07-10) | v3.0 line is new (June 2026); 2.13.x was the prior stable line. Check the 3.0 release notes before upgrading a 2.x app. |
-| Redis Open Source | **8.8.0** GA (2026-05-25) | 8.x line; 8.6 added the LRM (least-recently-modified) eviction policies. |
+| ZiggyCreatures.FusionCache | **2.9.0** (2026-09-22; newer? check nuget.org) | Targets netstandard2.0 / net8.0 / net9.0 / net10.0. AOT-compatible since 2.2.0. |
+| StackExchange.Redis | **3.x** (3.3.1 on 2026-09-22; current patch: check nuget.org) | 3.0.0 shipped 2026-06-12; 2.13.x was the prior stable line. Check the 3.0 release notes before upgrading a 2.x app. |
+| Redis Open Source | **8.10** (8.10.2 on 2026-09-17; current patch: check github.com/redis/redis/releases) | 8.x line; patches ship for several 8.x minors in parallel. 8.6 added the LRM (least-recently-modified) eviction policies. |
 
 Notable in FusionCache 2.5/2.6: optional **distributed-level stampede protection** via
 `IFusionCacheDistributedLocker` (see below), `MemoryCacheDuration` entry option as a

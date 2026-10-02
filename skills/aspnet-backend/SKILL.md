@@ -171,5 +171,5 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Serilog: https://github.com/serilog/serilog (ASP.NET Core integration: https://github.com/serilog/serilog-aspnetcore)
 - Polly: https://github.com/App-vNext/Polly (docs: https://www.pollydocs.org/)
 - Spectre.Console (CLI apps): https://spectreconsole.net/
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
+- **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
 - **Curated enterprise example codebases (dotnet/eShop, CleanArchitecture templates, async guidance — with what to study vs ignore): [references/example-codebases.md](references/example-codebases.md) — consult when designing service boundaries, aggregates, or event flows.**

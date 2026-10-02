@@ -1,6 +1,6 @@
 # Signal Store (`@ngrx/signals`) — patterns reference
 
-Verified against NgRx 22.0.1 (Angular 22). Package entry points: `@ngrx/signals`,
+Verified against NgRx 22 / Angular 22 (verified October 2026). Package entry points: `@ngrx/signals`,
 `@ngrx/signals/entities`, `@ngrx/signals/rxjs-interop`, `@ngrx/signals/events`,
 `@ngrx/signals/resource` (experimental), `@ngrx/signals/testing`; plus `@ngrx/operators` for
 `tapResponse` / `mapResponse`.

@@ -50,7 +50,7 @@ put component-specific derived values in a shared/global store — keep those lo
   `references/hydration.md`.
 
 Read the relevant reference file before generating non-trivial code — the APIs move fast and the
-details there are verified against NgRx 22.0.1 (September 2026).
+details there are verified against NgRx 22 (verified October 2026).
 
 ## Non-negotiable modern idioms
 

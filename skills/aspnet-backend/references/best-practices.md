@@ -1,19 +1,21 @@
 # ASP.NET Core / .NET 10 Backend Best Practices
 
-Verified against official documentation, July 2026. Primary sources:
+Verified against official documentation, October 2026. Primary sources:
 https://learn.microsoft.com/en-us/aspnet/core/fundamentals/best-practices?view=aspnetcore-10.0 ·
 https://learn.microsoft.com/en-us/aspnet/core/release-notes/aspnetcore-10.0 ·
 https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/?view=aspnetcore-10.0 ·
 https://learn.microsoft.com/en-us/dotnet/core/resilience/http-resilience ·
 https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel
 
-## Current versions (July 2026)
+## Current versions (verified October 2026)
 
-- **.NET 10** — LTS, supported 2025-11-11 → 2028-11-14. Latest runtime patch **10.0.9** (2026-06-09); SDKs **10.0.301** (3xx band) and 10.0.109 (1xx band). A `global.json` pin of `10.0.100` + `"rollForward": "latestFeature"` resolves to the installed 3xx band — still valid.
+Patch numbers rotate monthly — check nuget.org / the .NET release notes for the current ones; the values below are the state at verification.
+
+- **.NET 10** — LTS, supported 2025-11-11 → 2028-11-14. Runtime patch **10.0.12** (2026-09-08); SDKs **10.0.401** (4xx band) and 10.0.112 (1xx band). A `global.json` pin of `10.0.100` + `"rollForward": "latestFeature"` resolves to the newest installed feature band — still valid.
 - **C# 14** ships with .NET 10: `field`-backed properties, `extension` blocks, null-conditional assignment (`?.=`), first-class `Span<T>` conversions, unbound-generic `nameof`.
-- **Microsoft.Extensions.Http.Resilience 10.7.0** (2026-06-09) — versions now track .NET 10.x.
-- **OpenTelemetry.Extensions.Hosting 1.16.0** (2026-06-10); pair with same-version `OpenTelemetry.Instrumentation.AspNetCore`, `.Instrumentation.Http`, `.Exporter.OpenTelemetryProtocol`.
-- ASP.NET Core 10 bundles **Microsoft.OpenApi 2.0.0** (OpenAPI **3.1** is the default document version) and moves minimal-API validation into the **Microsoft.Extensions.Validation** package.
+- **Microsoft.Extensions.Http.Resilience 10.x** (10.10.0 at verification) — versions track .NET 10.x minor releases; check nuget.org.
+- **OpenTelemetry 1.19.x** (Extensions.Hosting / Exporter.OpenTelemetryProtocol 1.19.1, Instrumentation.AspNetCore / .Http 1.19.0 at verification) — keep all `OpenTelemetry.*` packages on the same minor; check nuget.org.
+- ASP.NET Core 10 depends on **Microsoft.OpenApi 2.x** (OpenAPI **3.1** is the default document version) and moves minimal-API validation into the **Microsoft.Extensions.Validation** package.
 
 ## Established patterns
 
@@ -314,4 +316,4 @@ OTLP is the vendor-neutral default; configure endpoint/resource via standard `OT
 - https://github.com/serilog/serilog-extensions-hosting (`writeToProviders`) · https://github.com/serilog/serilog-sinks-opentelemetry — Serilog → OTLP.
 - https://github.com/open-telemetry/opentelemetry-dotnet-contrib/tree/main/src/OpenTelemetry.Instrumentation.Runtime — on .NET 9+ it only subscribes to the built-in `System.Runtime` meter.
 - https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-10/overview — .NET 10 LTS status, C# 14 feature list.
-- https://github.com/dotnet/core/blob/main/release-notes/10.0/README.md — patch/SDK version table (10.0.9 / SDK 10.0.301, 2026-06-09).
+- https://github.com/dotnet/core/blob/main/release-notes/10.0/README.md — patch/SDK version table (10.0.12 / SDK 10.0.401, 2026-09-08).

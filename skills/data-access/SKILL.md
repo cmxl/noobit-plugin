@@ -202,5 +202,5 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Dapper: https://github.com/DapperLib/Dapper
 - Npgsql: https://www.npgsql.org/doc/ (EF Core provider: https://www.npgsql.org/efcore/)
 - Microsoft.Data.Sqlite: https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
-- **EF Core + Dapper seam deep-dive (verified July 2026): [references/efcore-dapper-seam.md](references/efcore-dapper-seam.md) — read it when mixing the two or moving bulk data.**
+- **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
+- **EF Core + Dapper seam deep-dive (verified October 2026): [references/efcore-dapper-seam.md](references/efcore-dapper-seam.md) — read it when mixing the two or moving bulk data.**

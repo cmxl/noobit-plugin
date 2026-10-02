@@ -85,4 +85,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Performance tips chapter: https://www.postgresql.org/docs/current/performance-tips.html
 - Indexes chapter: https://www.postgresql.org/docs/current/indexes.html
 - Npgsql: https://www.npgsql.org/doc/
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before tuning or rewriting queries.**
+- **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before tuning or rewriting queries.**

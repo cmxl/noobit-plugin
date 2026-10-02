@@ -1,11 +1,11 @@
 # RabbitMQ Messaging — Best Practices Reference (.NET)
 
-Verified against official documentation, July 2026. Extends `SKILL.md` (topology conventions, outbox, idempotency rules live there). Sources: rabbitmq.com docs (reliability, confirms, quorum-queues, dlx, ttl, production-checklist, heartbeats, release-information), the .NET client API guide and API reference, and nuget.org. Full URL list at the bottom.
+Verified against official documentation, October 2026. Extends `SKILL.md` (topology conventions, outbox, idempotency rules live there). Sources: rabbitmq.com docs (reliability, confirms, quorum-queues, dlx, ttl, production-checklist, heartbeats, release-information), the .NET client API guide and API reference, and nuget.org. Full URL list at the bottom.
 
-## Current versions (July 2026)
+## Current versions (verified October 2026)
 
-- **RabbitMQ server: 4.3.x** — latest patch **4.3.2** (2026-06-15). 4.2.x community support ended 2026-07-31, 4.1.x on 2026-01-31; 3.13.x is out of community support. Target 4.3.x for new deployments — its community support ends 2026-11-30, so plan the move to the next series (4.4) as soon as it ships; older series only with a commercial license.
-- **RabbitMQ.Client NuGet: 7.2.1** (2026-02-25). Ships `net8.0` + `netstandard2.0` targets; runs fine on `net10.0`. Fully async API (`IConnection`/`IChannel`), `CancellationToken` on every operation.
+- **RabbitMQ server: 4.3.x** — latest patch **4.3.6** (2026-09-16) — check https://www.rabbitmq.com/release-information for newer patches and support dates. 4.2.x community support ended 2026-07-31, 4.1.x on 2026-01-31; 3.13.x is out of community support. Target 4.3.x for new deployments — its community support ends 2026-11-30, so plan the move to the next series (4.4) as soon as it ships; older series only with a commercial license.
+- **RabbitMQ.Client NuGet: 7.2.2** (2026-08-05; check https://www.nuget.org/packages/RabbitMQ.Client for newer). Ships `net8.0` + `netstandard2.0` targets; runs fine on `net10.0`. Fully async API (`IConnection`/`IChannel`), `CancellationToken` on every operation.
 
 ## Established patterns
 

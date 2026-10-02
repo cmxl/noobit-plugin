@@ -1,17 +1,17 @@
 # PostgreSQL Best Practices — Performance, Indexing, Query Correctness
 
-Verified against official documentation, July 2026. Sources: PostgreSQL 18 manual (docs/current), PostgreSQL 18 release notes and versioning policy, Npgsql official docs. Full URLs in "Sources" at the end. Extends `SKILL.md` (workflow, equivalence check, join rules) with verified detail — read that first.
+Verified against official documentation, October 2026. Sources: PostgreSQL 18 manual (docs/current), PostgreSQL 18 release notes and versioning policy, Npgsql official docs. Full URLs in "Sources" at the end. Extends `SKILL.md` (workflow, equivalence check, join rules) with verified detail — read that first.
 
-## Current versions (July 2026)
+## Current versions (October 2026)
 
-- **PostgreSQL 18 is the current major** (released 2025-09-25, EOL 2030-11-14) — check https://www.postgresql.org/support/versioning/ for the current minor and always run it. Supported majors: 14 (EOL **2026-11-12** — plan upgrades now), 15, 16, 17, 18. **PostgreSQL 19** is in beta — not for production.
+- **PostgreSQL 18 is the current major** (released 2025-09-25, EOL 2030-11-14) — check https://www.postgresql.org/support/versioning/ for the current minor and always run it. Supported majors: 14 (EOL **2026-11-12** — plan upgrades now), 15, 16, 17, 18. **PostgreSQL 19** is still in beta (check https://www.postgresql.org/about/newsarchive/) — not for production.
 - PG 18 performance-relevant changes (release notes):
   - **Asynchronous I/O subsystem**: `io_method` (default `worker`; `io_uring` on Linux builds with liburing; `sync` for old behavior), `io_workers` (default 3). Covers sequential scans, bitmap heap scans, and vacuum; up to ~3x faster reads from storage. `effective_io_concurrency` default is now 16.
   - **B-tree skip scan**: multicolumn B-tree usable when `=` on a prefix column is omitted (helps, but proper column order still wins).
   - Hash join / `GROUP BY` performance and memory improvements (also speeds hashed `EXCEPT`); merge joins can use incremental sort; faster multi-relation locking; **parallel GIN index builds**.
   - `EXPLAIN ANALYZE` now **implies `BUFFERS`** (use `BUFFERS OFF` to suppress).
   - Vacuum can eagerly freeze all-visible pages (`vacuum_max_eager_freeze_failure_rate`), cutting later aggressive-freeze spikes.
-- **Npgsql 10.0 is the current stable** .NET driver (drops .NET 6; OpenTelemetry-aligned tracing/metrics; `date`/`time` now map to `DateOnly`/`TimeOnly`).
+- **Npgsql 10.0 is the current stable major** .NET driver — check https://www.nuget.org/packages/Npgsql for the current patch (10.0 drops .NET 6; OpenTelemetry-aligned tracing/metrics; `date`/`time` now map to `DateOnly`/`TimeOnly`).
 
 ## Established patterns
 
@@ -294,4 +294,5 @@ ORDER BY xact_start;
 - https://www.npgsql.org/doc/performance.html
 - https://www.npgsql.org/doc/prepare.html
 - https://www.npgsql.org/doc/release-notes/10.0.html
+- https://www.nuget.org/packages/Npgsql
 - https://www.pgbouncer.org/config.html, https://www.pgbouncer.org/changelog.html

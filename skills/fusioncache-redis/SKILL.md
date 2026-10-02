@@ -176,4 +176,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - FusionCache (docs index): https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/README.md
 - Redis: https://redis.io/docs/latest/
 - StackExchange.Redis client: https://stackexchange.github.io/StackExchange.Redis/
-- **Established patterns & current versions (verified July 2026, FusionCache October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
+- **Established patterns & current versions (verified July 2026, versions October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

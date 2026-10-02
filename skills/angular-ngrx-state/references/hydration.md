@@ -4,7 +4,7 @@ This covers **state persistence**: saving store state to `localStorage`/`session
 restoring it on reload. ("Hydration" here is a metaphor and is unrelated to Angular SSR client
 hydration — for that, see the note at the end.)
 
-Verified against NgRx 22.0.1 / Angular 22. Pick the approach that matches the store type.
+Verified against NgRx 22 / Angular 22 (verified October 2026). Pick the approach that matches the store type.
 
 ## Contents
 1. Cross-cutting rules (SSR safety, versioning, whitelisting)
@@ -98,7 +98,7 @@ on every state-changing action, so keep persisted slices small or debounce the w
 
 ## 3. Classic Store — `ngrx-store-localstorage` (library)
 
-Community library, not part of NgRx. Latest is `20.1.0` (Jan 2026) with open-ended peers
+Community library, not part of NgRx. Latest major is 20.x (no release since Jan 2026) with open-ended peers
 (`@angular/core` / `@ngrx/store` `>=20`) — there is no 21.x/22.x; check `npm view ngrx-store-localstorage`
 before pinning, since it lags NgRx majors.
 It's just a meta-reducer factory, so it drops into `provideStore`:

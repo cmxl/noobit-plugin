@@ -96,4 +96,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - SQL Server docs: https://learn.microsoft.com/en-us/sql/
 - Index architecture & design guide: https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-index-design-guide
 - Query Store: https://learn.microsoft.com/en-us/sql/relational-databases/performance/monitoring-performance-by-using-the-query-store
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before tuning or rewriting queries.**
+- **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before tuning or rewriting queries.**

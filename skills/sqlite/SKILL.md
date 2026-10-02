@@ -84,4 +84,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Query optimizer overview: https://sqlite.org/optoverview.html
 - Query planner: https://sqlite.org/queryplanner.html
 - Microsoft.Data.Sqlite: https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before tuning or rewriting queries.**
+- **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before tuning or rewriting queries.**

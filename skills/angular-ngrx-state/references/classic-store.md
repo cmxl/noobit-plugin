@@ -1,6 +1,6 @@
 # Classic global Store (`@ngrx/store` + `@ngrx/effects`) — patterns reference
 
-Verified against NgRx 22.0.1 (Angular 22). Use this for **SHARI** state (Shared,
+Verified against NgRx 22 / Angular 22 (verified October 2026). Use this for **SHARI** state (Shared,
 Hydrated, Available across route re-entry, Retrieved via side effect, Impacted by many sources) and
 when you want a single serializable state tree with time-travel debugging. For feature/component
 state, prefer the Signal Store (`references/signal-store.md`).

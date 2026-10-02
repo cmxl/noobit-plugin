@@ -1,15 +1,15 @@
 # EF Core + Dapper — the seam, deep dive
 
-Verified against official documentation, July 2026 (learn.microsoft.com EF Core & SqlClient docs, npgsql.org, DapperLib README/source, nuget.org). Full URLs in **Sources**. Conventions for all samples: net10.0, C# latest, nullable enabled, async with `CancellationToken` threaded, DTO projections.
+Verified against official documentation, October 2026 (learn.microsoft.com EF Core & SqlClient docs, npgsql.org, DapperLib README/source, nuget.org). Full URLs in **Sources**. Conventions for all samples: net10.0, C# latest, nullable enabled, async with `CancellationToken` threaded, DTO projections.
 
-## Current versions (July 2026)
+## Current versions (verified October 2026 — check nuget.org for the latest patch)
 
 | Package | Version | Notes |
 |---|---|---|
-| Microsoft.EntityFrameworkCore | 10.0.9 (2026-06-09) | EF 11 in preview (11.0.0-preview.5) |
-| Dapper | 2.1.79 (2026-05-16) | |
-| Npgsql.EntityFrameworkCore.PostgreSQL | 10.0.3 (2026-07-10) | depends on Npgsql ≥ 10.0.3 |
-| Microsoft.Data.SqlClient | 7.0.2 (2026-06-25) | |
+| Microsoft.EntityFrameworkCore | 10.0.x (10.0.12 on 2026-09-08) | EF 11 at release candidate (11.0.0-rc.1) |
+| Dapper | 2.1.x (2.1.89 on 2026-09-23) | |
+| Npgsql.EntityFrameworkCore.PostgreSQL | 10.0.x (10.0.3 on 2026-07-10) | depends on Npgsql ≥ 10.0.3 |
+| Microsoft.Data.SqlClient | 7.1.x (7.1.1 on 2026-09-29) | Microsoft.EntityFrameworkCore.SqlServer 10.0.12 pulls the 6.1.x line transitively |
 | Microsoft.Data.Sqlite | 10.0.x | ships with the EF 10 release train |
 
 ## Established patterns

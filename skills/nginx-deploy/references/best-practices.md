@@ -1,14 +1,14 @@
 # Best Practices: nginx + Let's Encrypt in front of ASP.NET Core
 
-Verified against official documentation, July 2026. Sources: nginx.org/en/docs,
+Verified against official documentation, October 2026. Sources: nginx.org/en/docs,
 letsencrypt.org/docs, eff-certbot.readthedocs.io, and the Mozilla server-side TLS guidelines v6.0
 (now hosted at configurator.tlsref.org). Full URL list at the bottom. This file extends SKILL.md —
 read that first; nothing here overrides it. Docker builds, images, and compose: see the `docker`
 skill.
 
-## Current versions (July 2026)
+## Current versions (October 2026)
 
-- **nginx**: stable **1.30.3**, mainline **1.31.2**. `http2 on;` directive (since 1.25.1) replaces
+- **nginx**: stable **1.30.5**, mainline **1.31.6**. `http2 on;` directive (since 1.25.1) replaces
   the legacy `listen ... http2` parameter. Since **1.29.7** `proxy_http_version` defaults to `1.1`
   (previously `1.0`) and accepts `2` for proxying — stable 1.30.x includes this.
 - **HTTP/3** (`ngx_http_v3_module`) is still marked **experimental** and is not built by default
@@ -38,9 +38,12 @@ skill.
   buffering per-response.
 - **WebSockets/SignalR**: `proxy_http_version 1.1;` (explicit — required below nginx 1.29.7 and
   harmless above) plus `Upgrade` and `Connection $connection_upgrade` (the `map` idiom from the nginx
-  WebSocket docs, as in SKILL.md). `proxy_read_timeout` kills idle sockets; SignalR's server pings
-  every 15 s (`KeepAliveInterval`), so even the 60s default holds — raise it only for raw
-  WebSockets without app-level pings.
+  WebSocket docs, as in SKILL.md — but map `''` to `''`, not the docs' `close`). Since 1.29.7 upstream
+  `keepalive 32 local` is on by default and no `Connection` header is sent; an explicit
+  `Connection close` still disables reuse, and an empty value omits the header. No explicit
+  `keepalive N;` is needed on 1.29.7+ (pools are per worker). `proxy_read_timeout` kills idle
+  sockets; SignalR's server pings every 15 s (`KeepAliveInterval`), so even the 60s default holds —
+  raise it only for raw WebSockets without app-level pings.
 - **Body size**: set `client_max_body_size` and Kestrel's `MaxRequestBodySize` (default ~28.6 MB)
   deliberately to the same value — nginx rejects larger bodies with 413 before the app sees them,
   and a higher nginx limit only buffers bodies Kestrel will reject anyway.
@@ -121,6 +124,7 @@ in August 2025; revocation is CRL-based and needs no server config.
 | Wildcard cert "to keep it simple" | Forces DNS-01 + API creds on the host | Per-hostname HTTP-01 certs; SAN list up to 100 names on `classic`, 25 on `tlsserver`/`shortlived` |
 | Trusting all proxies in `ForwardedHeadersOptions` while publishing app port | Header spoofing → scheme/IP forgery | App port never published; narrow `KnownIPNetworks` to the compose network instead of leaving both lists empty (MS docs: trusting any source is "not recommended") |
 | `Connection $http_connection` for WebSockets | Forwards whatever the client sent | `map $http_upgrade $connection_upgrade` (nginx WebSocket docs) |
+| Copying the docs' map verbatim (`'' close`) | Every plain request opens a new connection to Kestrel — upstream keepalive is off | `map $http_upgrade $connection_upgrade { default upgrade; '' ''; }` |
 
 ## Sources
 

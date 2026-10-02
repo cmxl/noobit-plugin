@@ -1,16 +1,19 @@
 # Best Practices: Docker builds, images, and compose for .NET + Angular
 
-Verified against official documentation, July 2026. Sources: docs.docker.com (build best practices,
+Verified against official documentation, October 2026. Sources: docs.docker.com (build best practices,
 cache mounts, Dockerfile reference, Compose reference) and github.com/dotnet/dotnet-docker plus
 learn.microsoft.com deployment docs. Full URL list at the bottom. This file extends SKILL.md — read
 that first; nothing here overrides it. Reverse proxy, TLS, and Let's Encrypt: see the
 `nginx-deploy` skill.
 
-## Current versions (July 2026)
+## Current versions (October 2026)
 
 - **.NET 10 is GA and LTS.** `mcr.microsoft.com/dotnet/aspnet:10.0` / `sdk:10.0` resolve to
-  **Ubuntu 24.04 "Noble"** (e.g. `10.0.9-noble`), *not* Debian — use `apt-get` as usual, it is
-  Ubuntu underneath. `.NET 11` exists only as `11.0-preview`; never use it in production.
+  **Ubuntu 24.04 "Noble"**, *not* Debian — use `apt-get` as usual, it is Ubuntu underneath. Patch
+  level: check the tag table in dotnet-docker's `README.aspnet.md`; the `10.0` tag rolls patches in.
+- **.NET 11 is a release candidate (STS)**, already published under the plain `11.0` tag, whose
+  default distro is **Ubuntu 26.04 "Resolute"**, not Noble. Never use it in production before GA;
+  it is STS, so LTS `10.0` stays the default afterwards too.
 - **Chiseled (distroless) variants are stable**: `10.0-noble-chiseled`, `10.0-noble-chiseled-extra`
   (adds `icu` + `tzdata`), plus `10.0-resolute-chiseled` (Ubuntu 26.04) and
   `10.0-azurelinux3.0-distroless[-extra]`. Alpine: `10.0-alpine3.23` / `10.0-alpine3.24`
@@ -31,7 +34,9 @@ that first; nothing here overrides it. Reverse proxy, TLS, and Let's Encrypt: se
   source file then invalidates only the publish/build layers, not restore/`npm ci`.
 - Run the .NET publish and Angular build as **independent stages** — BuildKit builds them in
   parallel and rebuilds only the stage whose inputs changed. Node is only ever a *build* stage
-  (`node:24-slim` — 24 is the Active LTS line); the runtime image never contains node. `-slim`
+  (`node:24-slim` — 24 is Active LTS until 2026-10-20, then Maintenance LTS until 2028-04-30;
+  Node 26 becomes Active LTS on 2026-10-28 — check the nodejs.org release schedule and move to
+  `node:26-slim` once it is LTS); the runtime image never contains node. `-slim`
   holds only what's needed to run node, which covers `npm ci` + the Angular build; switch to the
   full `node:24` image (based on `buildpack-deps`, compiler toolchain included) only if a
   dependency compiles native addons.
@@ -248,6 +253,8 @@ must exist there. Options, in order of preference for this stack:
 - https://github.com/dotnet/dotnet-docker/blob/main/samples/build-for-a-platform.md
 - https://hub.docker.com/_/node
 - https://nodejs.org/en/about/previous-releases
+- https://github.com/nodejs/Release#release-schedule
+- https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core
 - https://www.postgresql.org/support/versioning/
 - https://github.com/dotnet/dotnet-docker/blob/main/README.aspnet.md
 - https://github.com/dotnet/dotnet-docker/blob/main/documentation/image-variants.md

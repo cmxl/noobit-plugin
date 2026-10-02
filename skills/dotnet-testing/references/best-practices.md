@@ -4,6 +4,8 @@ Verified against official documentation and a compiled + executed sample (xUnit 
 
 ## Current versions (October 2026)
 
+Patch numbers move fast — check nuget.org before pinning; the majors and the notes are what this table guarantees.
+
 | Package | Stable | Notes |
 |---|---|---|
 | `xunit.v3` | **4.0.1** (2026-09-12; 4.0.0 on 2026-08-15) | 4.x is **MTP v2 only** — MTP v1 support and the `xunit.v3.mtp-v1` variants are gone (they only exist for 3.x); remaining variants: `xunit.v3` (= MTP v2), `xunit.v3.mtp-v2`, `xunit.v3.mtp-off` (no MTP at all — only for exotic runners). Mono is no longer supported. Breaking for config: see *Parallelism model*. |

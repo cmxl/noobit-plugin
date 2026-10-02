@@ -17,7 +17,7 @@ Verified against official documentation, October 2026. Primary sources: mermaid.
   - **GitLab**: native in repo markdown, issues, MRs, wikis, snippets; supports `click` node links; tracks recent Mermaid releases closely.
   - **VS Code**: since **VS Code 1.121 (May 2026)** the built-in `Mermaid Markdown Features` extension renders Mermaid in the Markdown preview (Matt Bierner's *Markdown Preview Mermaid Support* was merged in, per the 1.121 release notes). No extension needed on current VS Code.
   - **Azure DevOps wiki**: uses its own `:::mermaid` … `:::` container syntax, not a ```` ```mermaid ```` fence — follow the repo's existing convention.
-- Renderer versions differ across platforms → write to the **oldest renderer you target** (usually GitHub) and prefer long-stable syntax over latest features (e.g. v11.12+ half-arrows, v11.16 nullable `?` attribute types). The same source renders with dagre/classic on a v11 host and ELK/neo on a v12 host — if exact layout matters, pin `layout`/`look` in frontmatter.
+- Renderer versions differ across platforms → write to the **oldest renderer you target** (usually GitHub) and prefer long-stable syntax over latest features (e.g. v11.13+ half-arrowheads, v11.16+ optional `?` ER attribute types). The same source renders with dagre/classic on a v11 host and ELK/neo on a v12 host — if exact layout matters, pin `layout`/`look` in frontmatter.
 
 ## Established patterns
 

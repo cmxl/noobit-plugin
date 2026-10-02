@@ -1,11 +1,11 @@
 # SQLite Best Practices — Performance, Indexing, Query Correctness
 
-Verified against official documentation, July 2026. Sources: sqlite.org (optoverview, queryplanner, eqp, wal, pragma, lang_analyze, partialindex, expridx, withoutrowid, datatype3, lang_transaction) and learn.microsoft.com Microsoft.Data.Sqlite docs. Full URLs in **Sources** at the end.
+Verified against official documentation, October 2026. Sources: sqlite.org (optoverview, queryplanner, eqp, wal, pragma, lang_analyze, partialindex, expridx, withoutrowid, datatype3, lang_transaction) and learn.microsoft.com Microsoft.Data.Sqlite docs. Full URLs in **Sources** at the end.
 
-## Current versions (July 2026)
+## Current versions (October 2026)
 
-- **SQLite 3.53.3** — released 2026-06-26 (current release on sqlite.org).
-- **Microsoft.Data.Sqlite 10.0.9** — current stable NuGet package (2026-06-09); 11.0.0-preview.5 available. The `Vfs` connection-string keyword was added in 10.0.
+- **SQLite 3.53.x** — 3.53.4 (2026-07-24) was current at verification; check https://sqlite.org/changes.html for the latest patch.
+- **Microsoft.Data.Sqlite 10.0.x** — 10.0.12 (2026-09-08) was the current stable at verification; an 11.0.0 release candidate (rc.1) is available. Check https://www.nuget.org/packages/Microsoft.Data.Sqlite for the latest. The `Vfs` connection-string keyword was added in 10.0.
 - EXPLAIN QUERY PLAN output format is explicitly **not stable across releases** ("Applications should not depend on the output format") — treat plans as a diagnostic, never parse them in code.
 
 ## Established patterns
@@ -242,7 +242,7 @@ tx.Commit();
 
 ## Sources
 
-- https://sqlite.org/index.html (current version 3.53.3, 2026-06-26)
+- https://sqlite.org/index.html, https://sqlite.org/changes.html (3.53.4, 2026-07-24, at verification)
 - https://sqlite.org/optoverview.html
 - https://sqlite.org/queryplanner.html
 - https://sqlite.org/eqp.html
@@ -266,4 +266,4 @@ tx.Commit();
 - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/backup
 - https://learn.microsoft.com/en-us/ef/core/providers/sqlite/limitations
 - https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/interceptors
-- https://www.nuget.org/packages/Microsoft.Data.Sqlite (10.0.9 stable, 2026-06-09)
+- https://www.nuget.org/packages/Microsoft.Data.Sqlite (10.0.12 stable, 2026-09-08, at verification)

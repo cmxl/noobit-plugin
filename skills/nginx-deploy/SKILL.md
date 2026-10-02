@@ -48,7 +48,8 @@ Plus two named volumes on the stack: `certbot-webroot: {}`, `letsencrypt: {}`.
 server_tokens off;
 resolver 127.0.0.11 valid=10s;   # Docker's embedded DNS: re-resolve `app` after a redeploy
 upstream app { zone app 64k; server app:8080 resolve; }   # OSS `resolve` needs nginx 1.27.3+
-map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+# '' '' (not the docs' '' close): no Connection header on plain requests keeps upstream keepalive on
+map $http_upgrade $connection_upgrade { default upgrade; '' ''; }
 
 server {                          # catch-all: unknown Host/SNI never reaches the app
     listen 80 default_server;
@@ -129,10 +130,11 @@ Also set `AllowedHosts` (appsettings) to the real hostname(s) instead of `*` —
 | Trusting all proxies while publishing the app port | App port never published + `KnownIPNetworks` narrowed to the compose network |
 | `proxy_pass http://app:8080` (literal host) | Resolved once at startup → 502 after `up --no-deps app` gives a new IP; use `resolver` + `upstream … resolve` |
 | No `default_server` | First server block catches every Host → Host-header poisoning; keep the catch-all |
+| WebSocket map with `'' close` | Sends `Connection: close` on every plain request → no upstream keepalive (default since 1.29.7); map `''` to `''` |
 
 ## Official docs — verify, don't guess
 
 When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebSearch the official docs instead of guessing:
 - nginx: https://nginx.org/en/docs/
 - certbot: https://certbot.eff.org/ | Let's Encrypt: https://letsencrypt.org/docs/
-- **Established patterns & current versions (verified July 2026): [references/best-practices.md](references/best-practices.md) — read it before writing config in this area.**
+- **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing config in this area.**

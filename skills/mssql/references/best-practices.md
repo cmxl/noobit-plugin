@@ -1,25 +1,32 @@
 # SQL Server Best Practices — Performance, Indexing, Query Correctness
 
-Verified against official documentation, July 2026. All version-specific claims below were checked against
+Verified against official documentation, October 2026. All version-specific claims below were checked against
 learn.microsoft.com/sql (ver17 docs): the Index Architecture and Design Guide, Query Store docs, Statistics,
 Cardinality Estimation, Intelligent Query Processing (IQP), PSP optimization, tempdb, Table Hints, and the
 T-SQL function reference. Full URLs in **Sources**. This file extends `../SKILL.md` — read that first.
 
-## Current versions (July 2026)
+## Current versions (verified October 2026)
 
-- **SQL Server 2025 (17.x)** is the current release: GA **November 18, 2025**, build 17.0.1000.7. Introduces
-  database **compatibility level 170**. Docs moniker: `view=sql-server-ver17`.
+- **SQL Server 2025 (17.x)** is the current release: GA **November 18, 2025** (RTM build 17.0.1000.7). Introduces
+  database **compatibility level 170**. Docs moniker: `view=sql-server-ver17`. It ships monthly-ish cumulative
+  updates (CU9 in September 2026) — check the current CU/GDR at
+  https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/build-versions instead of trusting a number here.
 - 2025 engine additions relevant to tuning: PSP optimization extended to **DML** (DELETE/INSERT/MERGE/UPDATE, compat 170),
   **Optional Parameter Plan Optimization (OPPO)** (compat 170), **CE feedback for expressions** (compat 160),
   **OPTIMIZED_SP_EXECUTESQL** (compilation-storm relief for `sp_executesql`), **Query Store for secondary replicas**,
   **ADR in tempdb**, **tempdb space resource governance**, native **json**/**vector** types (allowed as INCLUDE columns,
-  not as index keys). Standard edition now up to 32 cores / 256 GB with Resource Governor; Express up to 50 GB/db.
+  not as index keys). Standard edition now up to the lesser of 4 sockets / 32 cores (24 in 2022) and a 256 GB
+  buffer pool, with Resource Governor; Express up to 50 GB per database.
 - **SQL Server 2022 (16.x)** / compat 160: PSP optimization, CE feedback, DOP feedback, memory grant feedback
   percentile+persistence, optimized plan forcing, `ASYNC_STATS_UPDATE_WAIT_AT_LOW_PRIORITY`.
 - **Query Store is enabled by default** (`READ_WRITE`) for new databases starting with SQL Server 2022 and in
   Azure SQL Database / Managed Instance. Not enabled by default in 2016–2019 — turn it on.
 - IQP features gate on **database compatibility level**, not just the server version
-  (`ALTER DATABASE db SET COMPATIBILITY_LEVEL = 170;`). Several also require Query Store (see below).
+  (`ALTER DATABASE db SET COMPATIBILITY_LEVEL = 170;`). Several also require Query Store (see below). **And on
+  edition**: in SQL Server 2025 the feedback features (CE, DOP, memory grant), batch mode on rowstore, batch-mode
+  adaptive joins, automatic tuning and Query Store on secondary replicas are **Enterprise only** (plus Enterprise Developer / Evaluation; Standard Developer = Standard); PSP, OPPO, optimized plan
+  forcing, optimized `sp_executesql`, scalar UDF inlining and table-variable deferred compilation are in all
+  editions. Azure SQL Database / Managed Instance have the full set.
 
 ## Established patterns
 
@@ -141,8 +148,8 @@ FROM sys.database_query_store_options;  -- actual != desired means it changed mo
 - **OPPO** (2025, compat 170): separate optimal plans depending on whether a parameter is NULL or NOT NULL —
   fixes the `WHERE (@p IS NULL OR col = @p)`-style optional-filter pattern.
 - IQP features that **require Query Store READ_WRITE**: CE feedback, DOP feedback, memory grant feedback
-  (percentile/persistence), optimized plan forcing. Free wins from compat level alone: batch-mode adaptive joins
-  and memory grant feedback (140), table-variable deferred compilation, scalar UDF inlining, batch mode on
+  (percentile/persistence), optimized plan forcing. Free wins from compat level alone (edition permitting — see Current versions):
+  batch-mode adaptive joins and memory grant feedback (140), table-variable deferred compilation, scalar UDF inlining, batch mode on
   rowstore (150), CE/DOP feedback + PSP (160), OPPO + CE feedback for expressions (170).
 
 ### RCSI vs NOLOCK (as officially documented)
@@ -248,7 +255,7 @@ ORDER BY total_duration_ms DESC;   -- total = what the server actually spends; s
 
 Azure SQL Database also has **automatic tuning**: `FORCE_LAST_GOOD_PLAN` (automatic plan correction) is on by
 Azure default and forces the last good Query Store plan on a detected plan-choice regression, verifying and
-reverting itself; on SQL Server 2017+ enable it with `ALTER DATABASE CURRENT SET AUTOMATIC_TUNING (FORCE_LAST_GOOD_PLAN = ON);`.
+reverting itself; on SQL Server 2017+ (Enterprise edition) enable it with `ALTER DATABASE CURRENT SET AUTOMATIC_TUNING (FORCE_LAST_GOOD_PLAN = ON);`.
 Check `sys.dm_db_tuning_recommendations` before forcing plans by hand.
 
 Missing-index suggestions (treat as *hints* — the DMV over-includes columns and ignores overlapping indexes; design per the index rules above, never create verbatim):
@@ -413,6 +420,9 @@ scans) is the documented first choice — disabling escalation risks lock-memory
 - https://learn.microsoft.com/en-us/sql/t-sql/functions/checksum-transact-sql?view=sql-server-ver17
 - https://learn.microsoft.com/en-us/sql/sql-server/what-s-new-in-sql-server-2025?view=sql-server-ver17
 - https://learn.microsoft.com/en-us/sql/sql-server/sql-server-2025-release-notes?view=sql-server-ver17
+- https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2025/build-versions
+- https://learn.microsoft.com/en-us/troubleshoot/sql/releases/download-and-install-latest-updates
+- https://learn.microsoft.com/en-us/sql/sql-server/editions-and-components-of-sql-server-2025?view=sql-server-ver17
 - https://learn.microsoft.com/en-us/sql/t-sql/functions/concat-ws-transact-sql?view=sql-server-ver17
 - https://learn.microsoft.com/en-us/sql/t-sql/functions/cast-and-convert-transact-sql?view=sql-server-ver17
 - https://learn.microsoft.com/en-us/sql/t-sql/functions/checksum-agg-transact-sql?view=sql-server-ver17
