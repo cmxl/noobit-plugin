@@ -35,8 +35,11 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 RUN apt-get update && apt-get install -y --no-install-recommends wget && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app .
-COPY --from=ngbuild /web/dist/app/browser wwwroot/   # adjust "app" to the Angular project name
-USER $APP_UID                                        # non-root
+# adjust "app" to the Angular project name
+# (Dockerfile comments must be on their own line — a trailing "# ..." becomes extra arguments)
+COPY --from=ngbuild /web/dist/app/browser wwwroot/
+# non-root
+USER $APP_UID
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s CMD wget -qO- http://localhost:8080/health/live || exit 1
 ENTRYPOINT ["dotnet", "App.Api.dll"]

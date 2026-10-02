@@ -45,14 +45,21 @@ FusionCache also implements Microsoft's `HybridCache` abstraction (`AsHybridCach
 
 ## Usage pattern
 
+**Factories may outlive the request.** With `FactorySoftTimeout` (timed-out factories keep running in
+the background by default) and `EagerRefreshThreshold`, the factory can run *after* the request has
+returned and its scope is disposed. A factory must therefore never use a request-scoped service
+(`DbContext`, anything that depends on one) captured from the constructor — create its own scope:
+
 ```csharp
-public sealed class ProductService(IFusionCache cache, AppDbContext db)
+public sealed class ProductService(IFusionCache cache, IDbContextFactory<AppDbContext> dbFactory)
 {
     public async Task<ProductDto?> GetAsync(int id, CancellationToken ct) =>
         await cache.GetOrSetAsync(
             CacheKeys.Product(id),
             async (ctx, token) =>
             {
+                // own context per factory run — safe when it runs in the background after the request
+                await using var db = await dbFactory.CreateDbContextAsync(token);
                 var product = await db.Products.AsNoTracking()
                     .Where(p => p.Id == id)
                     .Select(p => p.ToDto())
@@ -72,6 +79,11 @@ public sealed class ProductService(IFusionCache cache, AppDbContext db)
     }
 }
 ```
+
+Register the context with `AddDbContextFactory<AppDbContext>(...)` — since EF Core 6 it also registers
+the scoped `AppDbContext`, so request code keeps injecting the context directly. For other scoped
+dependencies inside a cache factory, use `IServiceScopeFactory`:
+`await using var scope = scopeFactory.CreateAsyncScope();`.
 
 ## Key & tag conventions
 
@@ -95,6 +107,7 @@ Invalidate on write (explicit `RemoveAsync`/`RemoveByTagAsync` in the code path 
 
 | Mistake | Fix |
 |---|---|
+| Factory uses a constructor-injected `DbContext` / scoped service | It may run after the request ended (soft timeout, eager refresh) → `ObjectDisposedException` or "second operation on this context", hidden by fail-safe. Use `IDbContextFactory<T>` or `IServiceScopeFactory` inside the factory |
 | `GetAsync` + manual `SetAsync` | `GetOrSetAsync` — it's the stampede-protected path |
 | No jitter | Synchronized mass expiry hammers the DB |
 | Fail-safe off for external calls | Serving slightly stale beats a 500 |

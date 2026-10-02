@@ -83,7 +83,9 @@ app.UseForwardedHeaders();   // first in the pipeline
 ## First-time cert issuance
 
 1. Start nginx with only the port-80 server block.
-2. `docker compose run --rm certbot certonly --webroot -w /var/www/certbot -d app.example.com --email you@example.com --agree-tos --no-eff-email`
+2. `docker compose run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d app.example.com --email you@example.com --agree-tos --no-eff-email`
+   `--entrypoint certbot` is required: the service's entrypoint is the renew loop, which would swallow
+   `certonly …` as ignored script arguments and never issue the first certificate.
 3. Enable the 443 block, `docker compose exec nginx nginx -s reload`. Renewal is handled by the certbot loop; renewed certs are picked up by the nginx service's 6-hourly reload loop (see services above).
 
 ## Common mistakes

@@ -135,6 +135,10 @@ builder.Services.AddReverseProxy()
     {
         t.ProxyRequest.Headers.Remove("Cookie");        // browser credentials never leave the BFF
         t.ProxyRequest.Headers.Remove("X-XSRF-TOKEN");
+        // headers are copied from the client by default — strip the trusted-identity namespace FIRST,
+        // otherwise TryAdd appends to a client-forged value (or forwards it unchanged when sub is null)
+        t.ProxyRequest.Headers.Remove("X-User-Id");
+        t.ProxyRequest.Headers.Remove("X-Service-Key");
         t.ProxyRequest.Headers.TryAddWithoutValidation("X-Service-Key", serviceKey); // BFF credential
         var sub = t.HttpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (sub is not null) t.ProxyRequest.Headers.TryAddWithoutValidation("X-User-Id", sub);

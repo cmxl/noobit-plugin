@@ -44,6 +44,7 @@ lazily-registered feature reducers), persist on every other action.
 import { ActionReducer, INIT, UPDATE } from '@ngrx/store';
 
 const STORAGE_KEY = 'app_state_v1';
+const PERSISTED_SLICES = ['preferences', 'filters'] as const;   // whitelist — never the whole tree
 
 export function hydrationMetaReducer(isBrowser: boolean) {
   return (reducer: ActionReducer<AppState>): ActionReducer<AppState> =>
@@ -59,7 +60,10 @@ export function hydrationMetaReducer(isBrowser: boolean) {
         }
       }
       const next = reducer(state, action);
-      if (isBrowser) localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      if (isBrowser && next !== state) {                               // skip no-op actions
+        const picked = Object.fromEntries(PERSISTED_SLICES.map((k) => [k, next[k]]));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(picked));
+      }
       return next;
     };
 }
@@ -67,23 +71,29 @@ export function hydrationMetaReducer(isBrowser: boolean) {
 
 ```ts
 // app.config.ts
-import { PLATFORM_ID, inject } from '@angular/core';
+import { ApplicationConfig, PLATFORM_ID, inject } from '@angular/core';
 import { isPlatformBrowser } from '@angular/common';
-import { provideStore, MetaReducer } from '@ngrx/store';
+import { META_REDUCERS, provideStore } from '@ngrx/store';
 
 export const appConfig: ApplicationConfig = {
   providers: [
-    provideStore(reducers, { metaReducers: getMetaReducers() }),
+    provideStore(reducers),
+    // inject() only works inside a provider factory — calling it while building the appConfig
+    // object literal throws NG0203 at startup
+    {
+      provide: META_REDUCERS,
+      useFactory: () => hydrationMetaReducer(isPlatformBrowser(inject(PLATFORM_ID))),
+      multi: true,
+    },
   ],
 };
-function getMetaReducers(): MetaReducer[] {
-  const isBrowser = isPlatformBrowser(inject(PLATFORM_ID));
-  return [hydrationMetaReducer(isBrowser)];
-}
 ```
 
-Best for one or two slices with simple needs. To persist only specific slices, pick them out in
-the write step instead of serializing the whole tree.
+Persisted slices must be **root (eagerly registered) reducers** — a lazily registered feature slice is
+`undefined` until it registers, and the first write before that drops its stored value.
+
+Best for one or two slices with simple needs. The whitelist keeps the write small; it still runs
+on every state-changing action, so keep persisted slices small or debounce the write.
 
 ## 3. Classic Store — `ngrx-store-localstorage` (library)
 
