@@ -65,7 +65,7 @@ group.AddEndpointFilter(async (ctx, next) =>
 });
 ```
 
-For genuine exceptions (webhooks), use `DisableAntiforgery()` on that endpoint and protect it another way (HMAC signatures).
+For genuine exceptions (webhooks), use `DisableAntiforgery()` on that endpoint and protect it another way: HMAC or provider signatures, verified either at ingress or — for payment providers — in a store-first inbox processor behind a body cap and rate limit (see the `paypal` skill).
 
 ## Same-origin layout
 
