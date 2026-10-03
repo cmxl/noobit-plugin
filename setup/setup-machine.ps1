@@ -47,7 +47,6 @@ $plugins = @(
     'code-simplifier@claude-plugins-official'
     'skill-creator@claude-plugins-official'
     'github@claude-plugins-official'
-    'azure@claude-plugins-official'
     'claude-md-management@claude-plugins-official'
 )
 foreach ($p in $plugins) { claude plugin install $p }
@@ -57,9 +56,10 @@ Step 'Updating marketplaces and plugins'
 claude plugin marketplace update
 foreach ($p in $plugins) { claude plugin update $p }
 
-# Project-scoped on purpose: azure-agent-skills@microsoft-agent-skills (~200 skills) would
-# crowd every other skill description out of the listing at user scope. Inside an Azure
-# project run:
+# Project-scoped on purpose: azure@claude-plugins-official (~30 skills + MCP) and
+# azure-agent-skills@microsoft-agent-skills (~200 skills) would crowd every other skill
+# description out of the listing at user scope. Inside an Azure project run:
+#   claude plugin install azure@claude-plugins-official --scope project
 #   claude plugin install azure-agent-skills@microsoft-agent-skills --scope project
 
 # Project-scoped, not installed here: nx@nx-claude-plugins (used in noobit.dev).

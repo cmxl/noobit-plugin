@@ -28,7 +28,6 @@ pwsh setup/setup-machine.ps1 -AdoOrg <your-azure-devops-org>   # -AdoOrg optiona
 | `code-simplifier` | claude-plugins-official | Code simplification agent |
 | `skill-creator` | claude-plugins-official | Skill authoring/eval tooling |
 | `github` | claude-plugins-official | GitHub MCP tools |
-| `azure` | claude-plugins-official | Azure MCP tools + skills |
 | `claude-md-management` | claude-plugins-official | CLAUDE.md audit/improve |
 
 Project-scoped (not installed globally):
@@ -36,6 +35,7 @@ Project-scoped (not installed globally):
 | Plugin | Marketplace | Project |
 |---|---|---|
 | `nx` | nx-claude-plugins | `E:\Source\noobit.dev` — reinstall inside that project on machines that build it |
+| `azure` | claude-plugins-official | Azure projects — `claude plugin install azure@claude-plugins-official --scope project`. Azure MCP tools + ~30 skills: at user scope they crowd other skills' descriptions out of the listing Claude sees |
 | `azure-agent-skills` | microsoft-agent-skills | Azure projects — `claude plugin install azure-agent-skills@microsoft-agent-skills --scope project`. ~200 skills: at user scope they push other skills' descriptions out of the listing Claude sees |
 
 ## Updating
