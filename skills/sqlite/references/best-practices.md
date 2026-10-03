@@ -148,10 +148,9 @@ CREATE TABLE orders (
 - **Use STRICT for new tables** — it removes the affinity-coercion bug class (see type affinity below) at write time. A database with STRICT tables needs SQLite 3.37+ to read it normally.
 - An existing table can't be switched in place — it takes a rebuild (create STRICT copy, copy rows, drop, rename).
 - **EF Core has no STRICT API** — EF Core 10's SQLite provider has no `IsStrict()`/`UseStrict()`. EF's SQLite type mappings emit only `INTEGER`/`REAL`/`TEXT`/`BLOB`, so generated columns are STRICT-compatible (a custom `HasColumnType("varchar(50)")` is not). Two ways:
-  - Replace the migrations SQL generator so every `CREATE TABLE` ends in `STRICT`; this also covers EF's table rebuilds (the `ef_temp_*` table goes through the same `CreateTableOperation`). `SqliteMigrationsSqlGenerator` is in an `.Internal` namespace (EF1001 warning) — re-check on EF upgrades:
+  - Replace the migrations SQL generator so every `CREATE TABLE` ends in `STRICT`; this also covers EF's table rebuilds (the `ef_temp_*` table goes through the same `CreateTableOperation`). `SqliteMigrationsSqlGenerator` is a public, documented provider class (`Microsoft.EntityFrameworkCore.Migrations`, package `Microsoft.EntityFrameworkCore.Sqlite.Core`) — no EF1001 suppression needed; still re-run the migration tests on EF upgrades, since the override hooks into its CREATE TABLE output:
 
     ```csharp
-    #pragma warning disable EF1001 // SqliteMigrationsSqlGenerator is internal API
     public sealed class StrictSqliteMigrationsSqlGenerator(
         MigrationsSqlGeneratorDependencies dependencies, IRelationalAnnotationProvider annotations)
         : SqliteMigrationsSqlGenerator(dependencies, annotations)

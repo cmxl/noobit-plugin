@@ -4,35 +4,21 @@ Discord POSTs every interaction to your **Interactions Endpoint URL**; you answe
 gateway connection, no long-lived process, scales like any ASP.NET Core app. Trade-off: no guild events
 (members, messages, reactions, voice) — pair with Webhook Events for installs/entitlements.
 
-**This code compiles against Discord.Net 3.20.1; the end-to-end tests in [testing.md](testing.md) POST
-Ed25519-signed Discord payloads to it and assert the response JSON** (PING, bad/malformed signatures,
-Components V2 reply, modal, deferral, unknown command, webhook events).
+Code targets Discord.Net 3.20.1; [testing.md](testing.md) POSTs Ed25519-signed Discord payloads to it
+end-to-end. Gateway-mode code it reuses (options, `InteractionErrors`, `DiscordLog`) is in
+[gateway-bot.md](gateway-bot.md).
 
-## Contents
-1. How it works
-2. Registration
-3. Endpoint
-4. Startup (modules, login, command registration, error replies)
-5. Modules (RestInteractionModuleBase)
-6. Deployment & portal setup
-7. Gotchas specific to HTTP mode
+Code blocks omit `using` directives (add the System.*, Discord.*, Microsoft.Extensions.* and `MyApp.*` namespaces the
+types come from); the file-scoped namespace shows which project a file belongs to.
+
+**Contents:** 1 How it works · 2 Registration · 3 Endpoint and signed-request verification (shared with Webhook
+Events) · 4 Startup (modules, login, command registration, error replies) · 5 Modules (RestInteractionModuleBase)
+· 6 Deployment & portal setup · 7 Gotchas specific to HTTP mode
 
 ## 1. How it works
 
-```mermaid
-sequenceDiagram
-    participant D as Discord
-    participant E as /discord/interactions
-    participant IF as InteractionService (RunMode.Async)
-    participant M as Module
-    D->>E: POST (X-Signature-Ed25519, X-Signature-Timestamp, raw JSON)
-    E->>E: verify Ed25519(timestamp + body) — 401 on failure
-    E->>IF: ExecuteCommandAsync(RestInteractionContext{callback})
-    IF-->>M: run (background)
-    M->>E: callback(json) via RespondAsync / DeferAsync / RespondWithModalAsync
-    E-->>D: 200 application/json (≤ 3 s)
-    M->>D: ModifyOriginalResponseAsync / FollowupAsync (REST, after response flushed)
-```
+Flow: verify → PING or parse → dispatch to `InteractionService` (`RunMode.Async`) → the module's first
+Respond/Defer/Modal becomes the HTTP response (≤ 3 s) → later edits and follow-ups are REST calls.
 
 Key mechanics of Discord.Net in HTTP mode:
 - `DiscordRestClient.ParseHttpInteractionAsync(publicKey, sig, ts, body, doApiCallOnCreation)` verifies and
@@ -46,13 +32,6 @@ Key mechanics of Discord.Net in HTTP mode:
 `DiscordHttpExtensions.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using Discord.Rest;
-using MyApp.Discord;
-using MyApp.Discord.Announcements;
-using MyApp.Discord.Search;
-
 namespace MyApp.Interactions;
 
 public static class DiscordHttpExtensions
@@ -61,12 +40,14 @@ public static class DiscordHttpExtensions
     {
         services.AddOptions<DiscordOptions>()
             .BindConfiguration(DiscordOptions.SectionName)
-            .Validate(o => o.PublicKey.Length == 64, "Discord:PublicKey must be the 64-char hex public key")
-            // Production needs a logged-in client: follow-ups/edits are REST calls, and Discord.Net dereferences
-            // CurrentUser when parsing DM interactions. Development may run without a token (guild interactions only).
+            // Mode-specific rules (SKILL.md "Stack fit"); the hex format is a DataAnnotation on DiscordOptions.
+            .Validate(o => o.PublicKey.Length > 0, "Discord:PublicKey is required for HTTP interactions")
+            // Production needs a logged-in client (follow-ups/edits are REST, DM parsing reads CurrentUser).
+            // Development may run without a token (guild interactions only).
             .Validate<IHostEnvironment>((o, env) => env.IsDevelopment() || !string.IsNullOrWhiteSpace(o.Token),
                 "Discord:Token is required outside Development")
             .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<DiscordOptions>, DiscordOptionsValidator>(); // gateway-bot.md §2
 
         services.AddSingleton(new DiscordRestConfig
         {
@@ -85,14 +66,13 @@ public static class DiscordHttpExtensions
             }));
         services.AddHostedService<DiscordHttpStartup>();
         services.AddHealthChecks();
-        // Real apps: a scoped EF Core inbox (DbContext) — the Webhook Events endpoint resolves it per request.
-        services.AddSingleton<IWebhookEventInbox, InMemoryWebhookEventInbox>();
+        services.AddScoped<IWebhookEventInbox, EfWebhookEventInbox>(); // your EF Core inbox (app-integration.md §5)
 
         services.AddSingleton<AnnouncementQueue>();
         services.AddSingleton<IAnnouncementQueue>(sp => sp.GetRequiredService<AnnouncementQueue>());
         services.AddHostedService<AnnouncementPublisher>();
 
-        services.AddSingleton<IDocsSearch, InMemoryDocsSearch>();
+        services.AddSingleton<IDocsSearch, DocsSearch>(); // your implementation (rich-ui.md §5)
         return services;
     }
 }
@@ -101,15 +81,15 @@ public static class DiscordHttpExtensions
 `Program.cs`
 
 ```csharp
-using MyApp.Interactions;
-
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDiscordHttpInteractions();
 
 var app = builder.Build();
 app.MapDiscordInteractions("/discord/interactions");
 app.MapDiscordWebhookEvents("/discord/events");
-app.MapHealthChecks("/health/live", new() { Predicate = _ => false }); // dependency-free: Discord's state never restarts the app
+app.MapHealthChecks("/health/live", new() { Predicate = _ => false }) // dependency-free: Discord's state never restarts the app
+    .AllowAnonymous()       // probes carry no cookie: opt out of the BFF fallback policy (noobit:bff-security)
+    .DisableRateLimiting();
 app.Run();
 
 public partial class Program;
@@ -119,24 +99,14 @@ The endpoint never awaits the command: it dispatches with `Task.Run` and answers
 response (respond/defer/modal) reaches the callback, so it works under either run mode. `RunMode.Async` is kept
 so failures surface through `InteractionExecuted` exactly as on the gateway and the shared error handler applies.
 
-## 3. Endpoint
+## 3. Endpoint and signed-request verification
 
 `DiscordInteractionsEndpoint.cs`
 
 ```csharp
-using System.Text.Json;
-using Discord.Interactions;
-using Discord.Rest;
-using Microsoft.Extensions.Options;
-using MyApp.Discord;
-
 namespace MyApp.Interactions;
 
-/// <summary>
-/// Discord's "Interactions Endpoint URL": Discord POSTs every interaction here instead of sending it over the gateway.
-/// Contract: verify the Ed25519 signature on the raw body (401 otherwise — Discord probes with bad signatures and
-/// removes the URL if you accept them), answer PING with {"type":1}, and return the initial response within 3 s.
-/// </summary>
+/// <summary>Discord's "Interactions Endpoint URL" — contract: SKILL.md rule 12, design points below.</summary>
 public static class DiscordInteractionsEndpoint
 {
     private static readonly TimeSpan ResponseBudget = TimeSpan.FromMilliseconds(2500); // leave headroom under 3 s
@@ -148,10 +118,11 @@ public static class DiscordInteractionsEndpoint
         // Root provider: commands run (RunMode.Async) after this request ends, so they must not use RequestServices.
         var root = app.ServiceProvider;
         return app.MapPost(pattern, (HttpContext http) => HandleAsync(http, root))
+            .AllowAnonymous()       // the Ed25519 signature IS the auth; under the BFF fallback policy Discord's PING gets 401
             .DisableAntiforgery()   // authenticated by signature, not cookies — the BFF/antiforgery rules don't apply here
             .ExcludeFromDescription();
-        // Optionally chain .RequireRateLimiting("discord") with a generous per-IP partition (Discord calls from
-        // many IPs): the body cap bounds memory, the limiter bounds Ed25519 work from unauthenticated callers.
+        // Rate limiting: exempt this route from the BFF's per-IP global limiter (design points below) — the body
+        // cap bounds memory, and Ed25519 verification is cheap enough to need no per-route limiter.
     }
 
     private static async Task HandleAsync(HttpContext http, IServiceProvider root)
@@ -165,8 +136,6 @@ public static class DiscordInteractionsEndpoint
         var signature = http.Request.Headers["X-Signature-Ed25519"].ToString();
         var timestamp = http.Request.Headers["X-Signature-Timestamp"].ToString();
 
-        // The signature covers timestamp + the exact raw bytes: read the body yourself, never model-bind it.
-        // Bounded read — a Content-Length check alone is bypassed by chunked requests.
         var body = await DiscordSignedRequest.ReadBodyAsync(http.Request, MaxBodyBytes, http.RequestAborted);
         if (body is null)
         {
@@ -174,25 +143,44 @@ public static class DiscordInteractionsEndpoint
             return;
         }
 
-        // Discord.Net doesn't check freshness: a captured request would otherwise be replayable forever.
         if (!DiscordSignedRequest.IsFresh(timestamp, now, MaxClockSkew)
-            || !DiscordSignedRequest.IsValidSignature(rest, publicKey, signature, timestamp, body))
+            || !DiscordSignedRequest.IsValidSignature(publicKey, signature, timestamp, body))
         {
             http.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }
 
         // PING (type 1): answer directly. Discord.Net's parser requires a user object a PING may not carry.
-        if (IsPing(body))
+        bool isPing;
+        try
+        {
+            isPing = IsPing(body);
+        }
+        catch (JsonException)
+        {
+            http.Response.StatusCode = StatusCodes.Status400BadRequest; // signed but not JSON: a client error, not a 500
+            return;
+        }
+
+        if (isPing)
         {
             await WriteJsonAsync(http, """{"type":1}""");
             return;
         }
 
-        // doApiCallOnCreation: false — don't spend the 3 s budget on REST lookups of channel/guild during parsing.
-        // Note: with no API call, RestInteraction.Guild stays null — guild-based preconditions such as
-        // [RequireUserPermission] can't evaluate (see http-interactions.md). Signature is re-verified here (cheap).
-        var interaction = await rest.ParseHttpInteractionAsync(publicKey, signature, timestamp, body, _ => false);
+        // doApiCallOnCreation: false — no REST lookups inside the 3 s budget (Guild stays null, see §4 preconditions).
+        RestInteraction? interaction;
+        try
+        {
+            interaction = await rest.ParseHttpInteractionAsync(publicKey, signature, timestamp, body, _ => false);
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            // Discord.Net deserializes with Newtonsoft: valid JSON of the wrong shape ("type": 1.5) throws here
+            http.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
         if (interaction is null)
         {
             // Interaction type Discord.Net doesn't model (e.g. PRIMARY_ENTRY_POINT for Activities).
@@ -253,7 +241,8 @@ public static class DiscordInteractionsEndpoint
         {
             if (reader.TokenType == JsonTokenType.PropertyName && reader.CurrentDepth == 1 && reader.ValueTextEquals("type"u8))
             {
-                return reader.Read() && reader.TokenType == JsonTokenType.Number && reader.GetInt32() == 1;
+                // TryGetInt32: GetInt32 throws FormatException (not JsonException) on 1.5 / 1e99 → would be a 500
+                return reader.Read() && reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out var type) && type == 1;
             }
 
             if (reader.TokenType is JsonTokenType.StartObject or JsonTokenType.StartArray && reader.CurrentDepth > 0)
@@ -274,14 +263,12 @@ public static class DiscordInteractionsEndpoint
 }
 ```
 
-Shared by this endpoint and the Webhook Events endpoint (app-integration.md §5):
+**Signed-request verification** — stated once here, shared by this endpoint and the Webhook Events endpoint
+(app-integration.md §5):
 
 `DiscordSignedRequest.cs`
 
 ```csharp
-using System.Globalization;
-using Discord.Rest;
-
 namespace MyApp.Interactions;
 
 /// <summary>Raw-body reading and Ed25519 checks for requests Discord signs (interactions, Webhook Events).</summary>
@@ -314,17 +301,22 @@ public static class DiscordSignedRequest
         return buffer.ToArray();
     }
 
+    // Discord.Net exposes its Ed25519 check only as an instance method on DiscordRestClient. This private instance
+    // is never logged in and makes no REST calls — it lets every hosting mode verify (a gateway-mode app has no
+    // DiscordRestClient registration), without touching the app's real client.
+    private static readonly DiscordRestClient Verifier = new();
+
     /// <summary>Ed25519 over timestamp + body. Malformed headers are <c>false</c> (→ 401), never an exception (→ 500).</summary>
-    public static bool IsValidSignature(DiscordRestClient rest, string publicKey, string signature, string timestamp, byte[] body)
+    public static bool IsValidSignature(string publicKey, string signature, string timestamp, byte[] body)
     {
-        if (signature.Length != 128 || timestamp.Length == 0)
+        if (publicKey.Length != 64 || signature.Length != 128 || timestamp.Length == 0)
         {
-            return false;
+            return false; // an unconfigured key verifies nothing — fail closed
         }
 
         try
         {
-            return rest.IsValidHttpInteraction(publicKey, signature, timestamp, body);
+            return Verifier.IsValidHttpInteraction(publicKey, signature, timestamp, body);
         }
         catch (Exception)
         {
@@ -340,18 +332,35 @@ public static class DiscordSignedRequest
 }
 ```
 
-Design points:
-- **Raw bytes, bounded**: the signature covers the exact body — model binding or re-serialization breaks it.
-  The read stops at 1 MiB even without a Content-Length (chunked), so unauthenticated callers can't make you
-  buffer arbitrary amounts.
-- **401 for anything unverifiable**, including malformed hex (Discord.Net's hex parser throws → would be 500).
+Design points (signed-request rules apply to both Discord endpoints):
+- **Raw bytes, bounded**: the signature covers timestamp + the exact body — model binding or re-serialization
+  breaks it. The read stops at the cap (1 MiB here) even without a Content-Length (chunked), so unauthenticated
+  callers can't make you buffer arbitrary amounts → 413.
+- **401 for anything unverifiable**, including missing headers and malformed hex (Discord.Net's hex parser
+  throws → would be 500). Antiforgery is disabled: these endpoints are authenticated by signature, not cookies;
+  the cookie-BFF rules (`noobit:bff-security`) apply to browser endpoints, not Discord's machine-to-machine calls.
+- **Exempt both Discord routes from the BFF's global limiter.** bff-security's `GlobalLimiter` (100/min per
+  IP) applies to every endpoint, and Discord's POSTs come from a small pool of egress IPs — a busy bot gets
+  429s, which users see as "The application did not respond". Return a no-limiter partition for these paths
+  inside the global partitioner (everything else stays as bff-security defines it). The 1 MiB body cap stays;
+  block abusive sources at the edge (nginx/WAF). `.DisableRateLimiting()` on both endpoints is equivalent
+  while they carry no named policy; the partitioner keeps the exemption next to the limiter it carves out of.
+
+  ```csharp
+  o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+      ctx.Request.Path.StartsWithSegments("/discord")   // /discord/interactions + /discord/events
+          ? RateLimitPartition.GetNoLimiter("discord")
+          : RateLimitPartition.GetFixedWindowLimiter(   // bff-security's per-user / per-IP partition, unchanged
+              ctx.User.FindFirstValue(ClaimTypes.NameIdentifier) is { } userId ? $"u:{userId}"
+                  : $"ip:{ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown"}",
+              _ => new FixedWindowRateLimiterOptions { PermitLimit = 100, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+  ```
 - **PING handled before parsing**: Discord.Net's parser requires a `user`/`member` object; a PING may lack one.
 - **Timestamp freshness**: Discord.Net doesn't check it, so the endpoint rejects timestamps more than 5 minutes
   from now (401). Handlers with side effects should still be idempotent on `interaction.Id`. A host clock that
   drifts by minutes now fails every request — keep NTP on.
-- **Dispatch off the request path** (`Task.Run`) — a deliberate exception to the "no `Task.Run` in handlers"
-  rule of `noobit:aspnet-backend`: the command must outlive the response (it edits/follows up after the
-  deferral is flushed). Unknown commands and stale buttons raise
+- **Dispatch off the request path** (`Task.Run`, SKILL.md "Stack fit"): the command must outlive the response.
+  Unknown commands and stale buttons raise
   `InteractionExecuted` *inline* inside `ExecuteCommandAsync` even under `RunMode.Async`; the error reply flows
   through the callback, which waits for this request to flush — awaiting dispatch would deadlock that path for
   5 s and Discord would show "did not respond". The tests assert the < 2 s budget for both cases.
@@ -365,26 +374,18 @@ Design points:
 - **2.5 s budget** with a warning: a command that neither responds nor defers is a bug — make it defer.
   On timeout — or when Discord aborts the request — the delivered gate is cancelled, so a late `RespondAsync`
   fails fast instead of stalling 5 s; late responses are dropped (Discord has already given up).
-- Antiforgery is disabled for this endpoint: it is authenticated by signature, not cookies. The cookie-BFF
-  rules (`noobit:bff-security`) apply to your browser endpoints, not to Discord's machine-to-machine calls.
 
 ## 4. Startup
 
 `DiscordHttpStartup.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using Discord.Rest;
-using Microsoft.Extensions.Options;
-using MyApp.Discord;
-using IResult = Discord.Interactions.IResult; // ASP.NET Core has its own IResult
-
 namespace MyApp.Interactions;
 
 /// <summary>
 /// Builds the interaction modules before Kestrel accepts requests, logs the REST client in (needed for
-/// follow-ups, edits, command registration and outbound posts) and registers commands once per deployment.
+/// follow-ups, edits, command registration and outbound posts) and registers commands once per deployment —
+/// only when this is THE process that owns the modules (app-integration.md §3: registration is a bulk overwrite).
 /// </summary>
 public sealed class DiscordHttpStartup(
     DiscordRestClient rest,
@@ -397,7 +398,8 @@ public sealed class DiscordHttpStartup(
     {
         rest.Log += message => DiscordLog.Write(logger, message);
         interactions.Log += message => DiscordLog.Write(logger, message);
-        interactions.InteractionExecuted += HandleExecutedAsync;
+        interactions.InteractionExecuted += (command, context, result) =>
+            InteractionErrors.HandleExecutedAsync(logger, command, context, result); // gateway-bot.md §4
 
         await interactions.AddModulesAsync(typeof(DiscordHttpStartup).Assembly, services);
 
@@ -410,6 +412,15 @@ public sealed class DiscordHttpStartup(
         // DiscordRestClient.LoginAsync calls users/@me — 401 fails startup. Neither call takes a cancel token and
         // RetryMode.AlwaysRetry retries 502s, so WaitAsync keeps a Discord outage from hanging startup forever.
         await rest.LoginAsync(TokenType.Bot, options.Value.Token).WaitAsync(cancellationToken);
+
+        // Bulk overwrite: registering from a process with no (or other) modules deletes the real commands.
+        if (!options.Value.RegisterCommands || interactions.Modules.Count == 0)
+        {
+            logger.LogInformation("Command registration skipped (Discord:RegisterCommands={Enabled}, {Count} modules)",
+                options.Value.RegisterCommands, interactions.Modules.Count);
+            return;
+        }
+
         if (options.Value.DevGuildId is { } guildId)
         {
             await interactions.RegisterCommandsToGuildAsync(guildId).WaitAsync(cancellationToken);
@@ -421,45 +432,12 @@ public sealed class DiscordHttpStartup(
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => rest.LogoutAsync();
-
-    private async Task HandleExecutedAsync(ICommandInfo? command, IInteractionContext context, IResult result)
-    {
-        if (result.IsSuccess || context.Interaction is not RestInteraction interaction
-            || interaction.Type == InteractionType.ApplicationCommandAutocomplete)
-        {
-            return;
-        }
-
-        if (result.Error is not InteractionCommandError.UnmetPrecondition)
-        {
-            logger.LogError((result as ExecuteResult?)?.Exception,
-                "Interaction {Command} failed: {Error} {Reason}", command?.Name, result.Error, result.ErrorReason);
-        }
-
-        var message = result.Error is InteractionCommandError.UnmetPrecondition
-            ? result.ErrorReason
-            : "Something went wrong. Please try again later.";
-
-        try
-        {
-            // HTTP mode: the initial response must go through the endpoint callback — Respond() only builds JSON, and
-            // IDiscordInteraction.RespondAsync on a RestInteraction silently discards it. Later replies are REST calls.
-            var callback = (context as IRestInteractionContext)?.InteractionResponseCallback;
-            await InteractionErrors.ReplyAsync(interaction, message, callback is null
-                ? null
-                : (_, text) => callback(interaction.Respond(text, ephemeral: true, allowedMentions: AllowedMentions.None)));
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Could not deliver error message for interaction {InteractionId}", interaction.Id);
-        }
-    }
 }
 ```
 
 Error replies in HTTP mode must go through the context callback while the HTTP request is still waiting:
-`IDiscordInteraction.RespondAsync` on a `RestInteraction` builds the JSON and **discards it**. Later replies use
-the shared `InteractionErrors` helper (gateway-bot.md §4), which never turns a public deferral into a public error.
+`IDiscordInteraction.RespondAsync` on a `RestInteraction` builds the JSON and **discards it**. The shared
+`InteractionErrors.HandleExecutedAsync` (gateway-bot.md §4) detects `IRestInteractionContext` and does that.
 
 ### Preconditions in HTTP mode
 
@@ -490,13 +468,6 @@ autocomplete handler are shared (see [rich-ui.md](rich-ui.md)).
 `HttpModules.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using Discord.Rest;
-using MyApp.Discord.Cards;
-using MyApp.Discord.Modals;
-using MyApp.Discord.Search;
-
 namespace MyApp.Interactions.Modules;
 
 // HTTP modules MUST derive from RestInteractionModuleBase: its Respond/Defer/Modal overrides hand the JSON to the
@@ -511,54 +482,13 @@ public sealed class GeneralModule : RestInteractionModuleBase<RestInteractionCon
             components: AboutCard.Build("MyApp", "1.0.0", "https://cdn.discordapp.com/embed/avatars/0.png", "https://example.com"),
             flags: MessageFlags.ComponentsV2); // REST responses do NOT auto-add the V2 flag — always pass it
 }
-
-[CommandContextType(InteractionContextType.Guild, InteractionContextType.BotDm, InteractionContextType.PrivateChannel)]
-[IntegrationType(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)]
-public sealed class SearchModule(IDocsSearch search) : RestInteractionModuleBase<RestInteractionContext>
-{
-    [SlashCommand("search", "Search the documentation")]
-    public async Task SearchAsync(
-        [Summary(description: "What are you looking for?"), MinLength(2), MaxLength(80), Autocomplete<DocsAutocomplete>]
-        string query)
-    {
-        await DeferAsync(); // becomes the HTTP response (type 5); the edit below is a real REST call
-
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var hits = await search.SearchAsync(query, timeout.Token);
-        await ModifyOriginalResponseAsync(m =>
-        {
-            m.Components = SearchCard.Build(query, hits, page: 0);
-            m.Flags = MessageFlags.ComponentsV2;
-            m.AllowedMentions = AllowedMentions.None;
-        });
-    }
-
-    [ComponentInteraction(CustomIds.SearchPagePattern)]
-    public async Task PageAsync(int page, string query)
-    {
-        await DeferAsync(); // DEFERRED_UPDATE_MESSAGE
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var hits = await search.SearchAsync(query, timeout.Token);
-        await ModifyOriginalResponseAsync(m => m.Components = SearchCard.Build(query, hits, page));
-    }
-}
-
-[CommandContextType(InteractionContextType.Guild, InteractionContextType.BotDm, InteractionContextType.PrivateChannel)]
-[IntegrationType(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)]
-public sealed class FeedbackModule(ILogger<FeedbackModule> logger) : RestInteractionModuleBase<RestInteractionContext>
-{
-    [SlashCommand("feedback", "Send feedback to the team")]
-    public Task FeedbackAsync() => RespondWithModalAsync<FeedbackModal>(CustomIds.FeedbackModal);
-
-    [ModalInteraction(CustomIds.FeedbackModal)]
-    public Task SubmitAsync(FeedbackModal feedback)
-    {
-        logger.LogInformation("Feedback from {UserId} ({Length} chars)", Context.User.Id, feedback.Body.Length); // never log the body
-        return RespondAsync(components: FeedbackCard.Thanks(feedback), ephemeral: true,
-            allowedMentions: AllowedMentions.None, flags: MessageFlags.ComponentsV2);
-    }
-}
 ```
+
+`SearchModule`, `FeedbackModule` etc. are the gateway modules (gateway-bot.md §6) with the base class swapped to
+`RestInteractionModuleBase<RestInteractionContext>`: `DeferAsync()` becomes the HTTP response (type 5, or 6 for
+a component), the following `ModifyOriginalResponseAsync` is a real REST call (needs the logged-in client), and
+every V2 response, and every edit that turns a deferred response into V2, passes `MessageFlags.ComponentsV2`.
+Edits of a message that already is V2 (`PageAsync`) don't need it: Discord never removes the flag once set.
 
 ## 6. Deployment & portal setup
 
@@ -573,8 +503,8 @@ public sealed class FeedbackModule(ILogger<FeedbackModule> logger) : RestInterac
    and use a separate **development application** with `DevGuildId` set — never point the production app's
    endpoint at a laptop.
 6. To switch an app back to the gateway, clear the endpoint URL.
-7. Command registration: every replica is fine for a few; with many, one replica (config flag) or a deployment step.
-8. Document the endpoint URL, portal settings and the transport decision in `docs/` (ADR via `/noobit:adr`).
+7. Command registration: see §4 (one place when there are many replicas).
+8. Document the endpoint URL, portal settings and the transport decision in `docs/` (ADR via `/noobit:new-adr`).
 
 ## 7. Gotchas specific to HTTP mode
 
@@ -585,9 +515,8 @@ public sealed class FeedbackModule(ILogger<FeedbackModule> logger) : RestInterac
 | Follow-up throws "Client is not logged in" | `DiscordRestClient` never logged in | Token configured + `LoginAsync` at startup |
 | Edit after defer → 404 Unknown interaction | Edit raced the HTTP response | Delivered gate in the callback (above) |
 | Portal refuses the URL | PING not `{"type":1}` or bad signature not 401 | See endpoint; test both |
+| "Did not respond" under load, 429s in the access log | BFF global per-IP limiter vs Discord's few egress IPs | No-limiter partition for `/discord/*` (§3) |
 | `ObjectDisposedException` in commands | Executed with `RequestServices` | Root provider + `AutoServiceScopes` |
 | Error handler's message never arrives | Used `interaction.RespondAsync` | Context callback with `interaction.Respond(...)` |
-| `IResult` ambiguous | ASP.NET Core vs Discord.Interactions | `using IResult = Discord.Interactions.IResult;` |
-| Every guild command answers "Something went wrong" | `[RequireUserPermission]` with `doApiCall: false` (Guild is null) | See "Preconditions in HTTP mode" |
 | 500 on some interactions | `ParseHttpInteractionAsync` returns null for types it doesn't model (e.g. PRIMARY_ENTRY_POINT) | Null guard → 400 (endpoint above) |
 | DM interactions throw `NullReferenceException` | Anonymous `DiscordRestClient` (parsing reads `CurrentUser`) | Log in before serving |

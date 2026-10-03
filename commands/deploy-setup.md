@@ -1,15 +1,16 @@
 ---
 description: Generate/refresh Docker, nginx, and Let's Encrypt deployment assets for the current project
-argument-hint: [domain] (e.g. app.example.com)
+argument-hint: "[domain] (e.g. app.example.com)"
+disable-model-invocation: true
 ---
 
-Generate or update production deployment assets for the current project, per the `docker` and `nginx-deploy` skills (load `noobit:docker` and `noobit:nginx-deploy` first). Domain argument: "$1" — if that is blank, use a `DOMAIN` placeholder throughout and say so in your report.
+Generate or update production deployment assets for the current project, per the `docker` and `nginx-deploy` skills (load `noobit:docker` and `noobit:nginx-deploy` first). Domain argument: "$ARGUMENTS" — if that is blank, use a `DOMAIN` placeholder throughout and say so in your report.
 
 1. **Inventory the project**: detect the .NET host project(s), Angular app, database provider, Redis/RabbitMQ usage (check csproj packages, appsettings, existing compose files). Base everything on what the project actually uses — don't add services it doesn't need.
 2. **Create/refresh**, preserving any existing customizations you find (read existing files first; merge, don't clobber):
    - Multi-stage `Dockerfile` (non-root, healthcheck, Angular build stage if a frontend exists)
-   - `compose.yaml` (internal network, healthchecks, no published DB/cache ports) + `compose.dev.yaml` for local dev (loaded only via `COMPOSE_FILE` in a developer's local `.env` — never on the server; see `docker`)
-   - `nginx/conf.d/<domain>.conf` (TLS, HTTP→HTTPS redirect, ACME webroot, proxy headers, websocket support)
+   - `compose.yaml` (`edge` network for nginx + app, `internal: true` `backend` network for data services, hardened app service, compose `secrets:`, healthchecks, no published DB/cache ports) + `compose.dev.yaml` for local dev (loaded only via `COMPOSE_FILE` in a developer's local `.env` — never on the server; see `docker`)
+   - `nginx/conf.d/app.conf` per `nginx-deploy` (domain in `server_name` and the cert paths; TLS, HTTP→HTTPS redirect, ACME webroot, proxy headers, websocket support)
    - certbot service + first-issuance instructions
    - `.env.example` covering every env var referenced
    - Verify `UseForwardedHeaders` is configured in the app; add it if missing.

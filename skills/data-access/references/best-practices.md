@@ -6,7 +6,7 @@ Verified against official documentation, October 2026. Extends `SKILL.md` (same 
 
 | Package | Version | Notes |
 |---|---|---|
-| Microsoft.EntityFrameworkCore | **10.0.x** (10.0.12 on 2026-09-08) | EF10 is LTS, released Nov 2025, supported until 2028-11-10. Requires .NET 10; will not run on earlier .NET or .NET Framework. 11.0 is at release candidate (11.0.0-rc.1) — do not use in production. |
+| Microsoft.EntityFrameworkCore | **10.0.x** (10.0.12 on 2026-09-08) | EF10 is LTS, released Nov 2025, supported until 2028-11-10 per the official EF Core releases page (the .NET lifecycle page lists .NET 10 through 2028-11-14). Requires .NET 10; will not run on earlier .NET or .NET Framework. 11.0 is at release candidate (11.0.0-rc.1) — do not use in production. |
 | Dapper | **2.1.x** (2.1.89 on 2026-09-23) | Targets net10.0, net8.0, netstandard2.0, net461+. |
 | Npgsql (ADO.NET) | **10.0.x** (10.0.3 on 2026-05-27) | `NpgsqlDataSource` is the entry point since Npgsql 7. |
 | Npgsql.EntityFrameworkCore.PostgreSQL | **10.0.x** (10.0.3 on 2026-07-10) | Pairs with EF Core 10.x; 11.0.0-rc.1 exists for EF 11 — not for production. |
@@ -39,9 +39,9 @@ public async Task<IReadOnlyList<OrderRow>> GetTopOrdersAsync(int take, Cancellat
 
 ### DbContext pooling
 
-- `AddDbContextPool<T>()` resets and reuses context instances; docs benchmark ~2x faster and ~10x fewer allocations than non-pooled for a single-row fetch. Orthogonal to ADO.NET connection pooling.
+- Pooling (`AddPooledDbContextFactory<T>()` — the stack's canonical registration in SKILL.md, which also provides the scoped context; `AddDbContextPool<T>()` is the scoped-only variant) resets and reuses context instances; docs benchmark ~2x faster and ~10x fewer allocations than non-pooled for a single-row fetch. Orthogonal to ADO.NET connection pooling.
 - Default `poolSize` is **1024** (max retained instances); beyond it EF silently falls back to creating instances per request — size it to your concurrency, not higher.
-- Pooled contexts behave like singletons: **`OnConfiguring` runs once**, and any per-request state (tenant ID, user) must be injected explicitly. Official pattern: `AddPooledDbContextFactory<T>()` (singleton) wrapped by a scoped `IDbContextFactory<T>` that stamps the state onto each context it hands out.
+- Pooled contexts behave like singletons: **`OnConfiguring` runs once**, and any per-request state (tenant ID, user) must be injected explicitly. Official pattern: the singleton pooled factory wrapped by a scoped registration that stamps the state onto each context it hands out (tenant example: `bff-security` → references/authorization.md).
 - EF resets its own state on return to the pool but **not ADO.NET state** — if you manually open a `DbConnection` on the context, close it before the context is disposed or state leaks across requests.
 - Micro-optimizations from the docs, for measured hot paths only: use `PooledDbContextFactory` directly (skips DI overhead) and `EnableThreadSafetyChecks(false)` (only after proving no concurrent-use bugs).
 
@@ -126,7 +126,7 @@ For user-facing edits the usual answer is store-wins: return 409 with the curren
 | Option | Official position |
 |---|---|
 | **SQL scripts** (`dotnet ef migrations script [--idempotent]`) | *Recommended* for production: reviewable, tunable, DBA-friendly, CI-generatable. Idempotent scripts check the history table — use when target state is unknown or fleets of databases differ. Not covered by migration locking. |
-| **Bundles** (`dotnet ef migrations bundle [--self-contained -r linux-x64]`) | Single-file executable; no SDK/EF tool/source (nor .NET runtime if self-contained) needed on the target. Good CI/CD fit; consistent transaction handling vs. ad-hoc script runners. Needs `appsettings.json` beside it (or `--connection`). |
+| **Bundles** (`dotnet ef migrations bundle [--self-contained -r linux-x64]`) | Single-file executable; no SDK/EF tool/source (nor .NET runtime if self-contained) needed on the target. Good CI/CD fit; consistent transaction handling vs. ad-hoc script runners. Builds the app's host, so it reads the app's configuration — files from its *working directory*, plus every source the host registers (env vars, `AddKeyPerFile` secrets) — or takes `--connection` (avoid: it lands in the process arguments). See [migrations-ci.md](migrations-ci.md). |
 | **CLI** (`dotnet ef database update`) | Dev/test only: applies SQL uninspected, needs SDK + source on the box. |
 | **Runtime** (`Database.MigrateAsync()` at startup) | Documented as *inappropriate for production*: app needs schema-change (elevated) permissions, SQL applied uninspected, rollback is awkward. Since EF9, `Migrate`/bundles/CLI acquire a **database-wide migration lock**, so the old concurrent-instance corruption race is handled — the other objections stand. Never call `EnsureCreatedAsync()` before `MigrateAsync()`; it bypasses the history table and breaks migrations. |
 

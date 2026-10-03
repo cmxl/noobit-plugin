@@ -137,7 +137,7 @@ ORDER BY 2 DESC LIMIT 20;                                          -- wraparound
 ```sql
 CREATE INDEX ON items (created_at DESC, id DESC);
 SELECT * FROM items
-WHERE (created_at, id) < (@last_created_at, @last_id)   -- cursor from previous page
+WHERE (created_at, id) < (@last_created_at, @last_id)   -- cursor from previous page; @name = Npgsql/Dapper parameters ($1, $2 in psql/PREPARE)
 ORDER BY created_at DESC, id DESC
 LIMIT 20;
 ```
@@ -173,7 +173,7 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 - **Timeouts** (all default `0` = off; docs advise against setting them globally in `postgresql.conf` — set per role, session or migration):
   - `lock_timeout` — aborts a statement waiting for a lock; applies to **each** lock acquisition separately. Set it in migrations (`SET lock_timeout = '5s'`) and retry on failure; keep it below `statement_timeout` or it never fires.
   - `statement_timeout` — caps a statement's run time (per role: `ALTER ROLE app SET statement_timeout = '30s'`).
-  - `idle_in_transaction_session_timeout` — terminates sessions idling inside an open transaction; those hold locks and keep vacuum from cleaning up.
+  - `idle_in_transaction_session_timeout` — terminates sessions idling inside an open transaction; those hold locks and keep vacuum from cleaning up. Exception by design: the outbox dispatcher idles in its claim transaction while awaiting broker confirms (≤ 10 s per row, up to batch × 10 s) — it raises the limit with `SET LOCAL idle_in_transaction_session_timeout` for that transaction only (pool-safe; `rabbitmq-messaging` → outbox-inbox.md), and its role's `transaction_timeout` must exceed batch × 10 s.
   - `transaction_timeout` (PG 17+) — caps a whole transaction.
 - **Online-friendly DDL**:
   - `ADD COLUMN` with a non-volatile `DEFAULT` is metadata-only (no rewrite); a volatile default (`clock_timestamp()`), a generated/identity column or a type change rewrites the table.
@@ -190,12 +190,12 @@ ALTER TABLE orders VALIDATE CONSTRAINT fk_orders_customer;        -- scan withou
 
 ```sql
 BEGIN;
-SELECT id, type, payload FROM outbox_messages
-WHERE processed_at IS NULL
-ORDER BY id LIMIT 100
+SELECT id, type, payload FROM outbox_messages      -- schema: rabbitmq-messaging → outbox-inbox
+WHERE sent_at IS NULL AND next_attempt_at <= now()
+ORDER BY seq LIMIT 50                   -- seq (identity) = dispatch order; id is a uuid; 50 = dispatcher BatchSize
 FOR UPDATE SKIP LOCKED;                 -- rows stay locked; other workers skip them
 -- … publish each message, wait for broker confirms …
-UPDATE outbox_messages SET processed_at = now() WHERE id = ANY(@ids);
+UPDATE outbox_messages SET sent_at = now() WHERE id = ANY(@ids);
 COMMIT;                                 -- crash before this → rows unlock and are published again (consumers dedupe)
 ```
 

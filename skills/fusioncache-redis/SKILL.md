@@ -70,16 +70,17 @@ returned and its scope is disposed. A factory must therefore never use a request
 public sealed class ProductService(IFusionCache cache, IDbContextFactory<AppDbContext> dbFactory)
 {
     public async Task<ProductDto?> GetAsync(int id, CancellationToken ct) =>
-        await cache.GetOrSetAsync(
+        await cache.GetOrSetAsync<ProductDto?>(
             CacheKeys.Product(id),
             async (ctx, token) =>
             {
                 // own context per factory run — safe when it runs in the background after the request
                 await using var db = await dbFactory.CreateDbContextAsync(token);
+                // multi-tenant app only: db.TenantId = tenantId; — a method parameter (also in the key), never ambient
                 var product = await db.Products.AsNoTracking()
                     .Where(p => p.Id == id)
-                    .Select(p => p.ToDto())
-                    .FirstOrDefaultAsync(token);
+                    .Select(p => new ProductDto(p.Id, p.Name))   // inline projection: SELECT id, name only
+                    .FirstOrDefaultAsync(token);                  // (a .ToDto() method call loads the whole entity)
                 if (product is null)
                     ctx.Options.Duration = TimeSpan.FromSeconds(30); // short negative caching
                 return product;
@@ -96,10 +97,14 @@ public sealed class ProductService(IFusionCache cache, IDbContextFactory<AppDbCo
 }
 ```
 
-Register the context with `AddDbContextFactory<AppDbContext>(...)` — since EF Core 6 it also registers
-the scoped `AppDbContext`, so request code keeps injecting the context directly. For other scoped
-dependencies inside a cache factory, use `IServiceScopeFactory`:
-`await using var scope = scopeFactory.CreateAsyncScope();`.
+`IDbContextFactory<AppDbContext>` comes from the one canonical registration in `data-access` → "DbContext
+registration" (`AddPooledDbContextFactory`, which also provides the scoped `AppDbContext` for request
+code) — don't add a second registration here. A context from the factory has no request, so under
+`bff-security`'s tenant model (`references/authorization.md`) its `TenantId` is `Guid.Empty` — it sees no
+rows and refuses tenant-owned inserts. In a multi-tenant app set `db.TenantId` right after
+`CreateDbContextAsync`, from the tenant id the method takes as a parameter (the same one in the cache key).
+For other scoped dependencies inside a cache factory, use
+`IServiceScopeFactory`: `await using var scope = scopeFactory.CreateAsyncScope();`.
 
 **Invalidation is not instantly global.** With background distributed operations on, `RemoveAsync` /
 `RemoveByTagAsync` return once L1 is updated; L2 and the backplane follow, so another node can serve the
@@ -176,4 +181,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - FusionCache (docs index): https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/README.md
 - Redis: https://redis.io/docs/latest/
 - StackExchange.Redis client: https://stackexchange.github.io/StackExchange.Redis/
-- **Established patterns & current versions (verified July 2026, versions October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
+- **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**

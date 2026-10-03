@@ -11,7 +11,7 @@ The frontend never sees a token. The ASP.NET Core app is the **Backend for Front
 
 **Scope guard — this pattern is for first-party browser clients.** It does NOT fit: third-party/public API consumers, machine-to-machine callers, or native/mobile apps (no shared-origin cookie jar) — those need token-based auth (API keys, client-credentials, or OIDC if the project adds a provider). A service can serve both: cookie BFF endpoints for its own SPA *and* a separately-authenticated token surface for external consumers — keep the two auth schemes and route groups explicitly separate rather than weakening the cookie rules to accommodate outsiders.
 
-**External login ("Sign in with Discord/GitHub/…") belongs here, not in the provider's skill:** the BFF runs the OAuth code flow server-side as an external login and then issues its own session cookie — provider tokens never reach the browser. (Linking a Discord account to an existing user, without making it the login, is `discord`.)
+**External login ("Sign in with Discord/GitHub/…") belongs here, not in the provider's skill:** the BFF runs the OAuth code flow server-side as an external login and then issues its own session cookie — provider tokens never reach the browser. We are a *client* of their identity provider; we still run no OIDC provider of our own. Wiring, callback → local user mapping, account linking, correlation-cookie SameSite: [references/external-login.md](references/external-login.md). (Linking a Discord account to an existing user, without making it the login, is `discord`.)
 
 ## Auth wiring
 
@@ -29,7 +29,9 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         o.Events.OnRedirectToLogin = ctx => { ctx.Response.StatusCode = 401; return Task.CompletedTask; };
         o.Events.OnRedirectToAccessDenied = ctx => { ctx.Response.StatusCode = 403; return Task.CompletedTask; };
     });
-builder.Services.AddAuthorization();
+// Secure by default: every endpoint WITHOUT authorization metadata requires a signed-in user.
+builder.Services.AddAuthorizationBuilder()
+    .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());
 ```
 
 - Password hashing: ASP.NET Core Identity's hasher (PBKDF2) or `Isopoh.Cryptography.Argon2`; never roll your own.
@@ -68,6 +70,8 @@ app.Use(async (ctx, next) =>
     await next();
 });
 ```
+
+**Output caching never happens inside the minting scope:** a response that sets a cookie is never output-cached, and `GetAndStoreTokens` forces `no-store`. Cacheable anonymous GETs live **outside** `/api` — `app.MapGroup("/public").AllowAnonymous().CacheOutput()` — where nothing mints or validates tokens (GET-only, no state change, no session data).
 
 Tokens are bound to the user identity and cached per request: after `SignInAsync` set `http.User = principal` (after `SignOutAsync`, `new ClaimsPrincipal(new ClaimsIdentity())`) so the login/logout response carries a token for the *new* identity — otherwise the next POST fails with 400.
 
@@ -126,7 +130,19 @@ app.UseAuthorization();
 
 CSP for Angular is not a one-liner: runtime component `<style>` elements need a nonce or `'unsafe-inline'` in `style-src`, and `default-src 'self'` blocks them. Pick the static-hosting (`security.autoCsp`) or per-response-nonce policy from references. If nginx serves `index.html`, set the headers there too — app middleware only covers what the app serves. `AllowedHosts` (appsettings) lists the real hostname(s), never `*`: host filtering is the app's second line against Host-header poisoning behind nginx's catch-all server.
 
-All endpoints `RequireAuthorization()` by default; opt **out** with `AllowAnonymous` (login, health, static) — never the reverse.
+**Authorization is on by default** via the fallback policy above — it covers every endpoint without authorization metadata, including ones nobody remembered to protect, and unmatched requests reaching `UseAuthorization`. Opt **out** explicitly, never the reverse:
+
+| `AllowAnonymous()` on | Why |
+|---|---|
+| `POST /api/auth/login` (+ register, password reset) | Anonymous by definition — still antiforgery-validated and rate-limited |
+| `POST /api/auth/logout` | Doesn't demand a live session — an expired one must not 401-loop the client (still antiforgery-validated) |
+| External-login challenge + completion endpoints | The user isn't signed in yet ([external-login.md](references/external-login.md)) |
+| `/health/live`, `/health/ready` | Probes carry no cookie (+ `.DisableRateLimiting()`) |
+| `MapStaticAssets()`, `MapFallbackToFile("index.html")` | They are endpoints, so the fallback policy applies; `UseStaticFiles()` before `UseAuthorization` is unaffected |
+| `MapOpenApi()` | Development only (`if (app.Environment.IsDevelopment())`) |
+| `/public/*` output-cached reads; webhooks (provider signature verified at ingress or in a store-first processor) | Anonymous by design |
+
+`GET /api/me` stays **protected**: logged out, the authorization middleware answers 401 (the mint middleware runs earlier, so the 401 still sets `XSRF-TOKEN`) — the handler only ever runs for a signed-in user. Policies, resource-based checks and tenant isolation: [references/authorization.md](references/authorization.md).
 
 ## Common mistakes
 
@@ -141,6 +157,8 @@ All endpoints `RequireAuthorization()` by default; opt **out** with `AllowAnonym
 | Data protection keys in container FS or the cache Redis | `PersistKeysToDbContext<T>`; cookies survive redeploys, evictions and Redis restarts |
 | Downstream API reachable from internet | Private network; only BFF is public |
 | Login error says "user not found" | Uniform errors, rate limit, lockout |
+| Bare `AddAuthorization()`, each endpoint expected to remember `RequireAuthorization()` | Fallback policy (auth wiring) + explicit `AllowAnonymous` opt-outs |
+| Output-cached endpoint under `/api` | Never cached (the XSRF mint sets a cookie + `no-store`) — cacheable reads go to `/public` |
 
 ## Official docs — verify, don't guess
 
@@ -149,3 +167,5 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - YARP: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/yarp/yarp-overview
 - OWASP CSRF Prevention Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
 - **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
+- **Authorization — policies, resource-based checks, per-tenant data scoping with EF named query filters: [references/authorization.md](references/authorization.md).**
+- **External login (OAuth providers as a client of their IdP): [references/external-login.md](references/external-login.md).**

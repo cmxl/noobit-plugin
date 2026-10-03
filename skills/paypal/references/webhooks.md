@@ -47,10 +47,8 @@ is the **refund** id (re-fetch via `GET /v2/payments/refunds/{id}`, dedupe on it
 `links[]` entry with `rel: "up"`. Sending that id to `/v2/payments/captures/{id}` just 404s. For
 `.REVERSED` no official sample exists (UNVERIFIED which resource you get) — check `resource_type` on
 each event. If an event ever carries a `capture` resource instead, it has no refund id: re-fetch the
-capture for its new status/amounts and find the refund via Transaction Search — `transaction_id` won't
-work (a capture id returns the capture itself); query a date window from the capture time with
-`transaction_type=T1107` (payment refund) and match `transaction_info.paypal_reference_id` == capture id
-(the field is documented as the related, pre-existing transaction; confirm on a sandbox refund).
+capture for its new status/amounts and find the refund via Transaction Search — see
+[orders-payments.md → Refunds of a capture](orders-payments.md#reconciliation).
 Refunds made through your own API already return their id in the refund response.
 
 `CHECKOUT.ORDER.COMPLETED` is documented as "for marketplaces and platforms only". Avoid `*` in
@@ -68,8 +66,10 @@ curl -s -X POST https://api-m.sandbox.paypal.com/v1/notifications/webhooks -H "A
 curl -s https://api-m.sandbox.paypal.com/v1/notifications/webhooks -H "Authorization: Bearer $TOKEN"
 ```
 
-Save the returned webhook `id` as configuration per environment (e.g. `PayPal:Sandbox:WebhookId`) —
-it is not a secret, but verification fails without the right one. Update subscriptions with
+Save the returned webhook `id` as `PayPal:WebhookId` (`PayPalOptions.WebhookId`,
+[orders-payments.md](orders-payments.md#options-paypal-section-validated-at-startup)) in each environment's
+configuration, next to that environment's `Environment`/`BaseUrl` — it is not a secret, but verification
+fails without the right one. One app per tenant: store it with the tenant's credentials instead. Update subscriptions with
 `PATCH /v1/notifications/webhooks/{id}`; inspect with `GET /v1/notifications/webhooks/{id}/event-types`.
 
 **Local development:** PayPal must reach a public HTTPS URL — use a tunnel (`devtunnel host -p 5000 --allow-anonymous`,
@@ -129,8 +129,10 @@ app.MapPost("/webhooks/paypal", async (HttpRequest request, InboxDbContext db, T
         var sameEvent = db.WebhookInbox.Where(r =>
             r.Provider == WebhookProvider.PayPal && r.Environment == environment && r.DedupKey == eventId);
 
-        // stored row was Rejected → replace it with this delivery and verify again
-        var replaced = await sameEvent.Where(r => r.Status == WebhookStatus.Rejected)
+        // stored row is Rejected, or was parked (DeadLetter) before it was ever verified → nothing proves it
+        // genuine: replace it with this delivery and verify again (otherwise every genuine retry gets 503)
+        var replaced = await sameEvent.Where(r => r.Status == WebhookStatus.Rejected
+                || (r.Status == WebhookStatus.DeadLetter && r.SignatureStatus == SignatureStatus.Unverified))
             .ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, WebhookStatus.Pending)
                 .SetProperty(r => r.SignatureStatus, SignatureStatus.Unverified)
@@ -144,8 +146,8 @@ app.MapPost("/webhooks/paypal", async (HttpRequest request, InboxDbContext db, T
                 .SetProperty(r => r.NextAttemptAt, now)
                 .SetProperty(r => r.LastError, (string?)null), ct);
 
-        // stored row not verified yet → can't tell which copy is genuine; 503 makes PayPal retry later,
-        // by then the stored row is either verified (→ 200) or Rejected (→ replaced above)
+        // stored row not verified yet and still in flight → can't tell which copy is genuine; 503 makes PayPal
+        // retry later, by then the stored row is verified (→ 200), Rejected or parked unverified (→ replaced above)
         if (replaced == 0 && await sameEvent.AnyAsync(r => r.SignatureStatus == SignatureStatus.Unverified, ct))
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         // otherwise a verified copy exists: a genuine PayPal retry — success
@@ -156,16 +158,38 @@ app.MapPost("/webhooks/paypal", async (HttpRequest request, InboxDbContext db, T
 .DisableAntiforgery()
 .RequireRateLimiting("paypal-webhook");
 
-// registration (+ app.UseRateLimiter() after routing): global fixed window — PayPal has no stable source IPs
+// registration: ONE fixed window for the route (no per-IP partition — PayPal's sender IPs are no documented key),
+// configuration-bound like bff-security's limits. Pipeline order: see the notes below.
+builder.Services.AddOptions<PayPalWebhookRateLimitOptions>()
+    .BindConfiguration(PayPalWebhookRateLimitOptions.Section).ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<PayPalWebhookRateLimitOptions>, PayPalWebhookRateLimitOptionsValidator>();
 builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;   // non-2xx → PayPal retries later
-    o.AddFixedWindowLimiter("paypal-webhook", w =>
-    {
-        w.PermitLimit = 300;                     // well above your real peak event rate
-        w.Window = TimeSpan.FromMinutes(1);
-        w.QueueLimit = 0;
-    });
+    o.AddPolicy("paypal-webhook", ctx => RateLimitPartition.GetFixedWindowLimiter("paypal-webhook",
+        _ =>                                                        // runs once (one partition), not per request
+        {
+            var limits = ctx.RequestServices.GetRequiredService<IOptions<PayPalWebhookRateLimitOptions>>().Value;
+            return new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = limits.PermitLimit, Window = TimeSpan.FromSeconds(limits.WindowSeconds), QueueLimit = 0,
+            };
+        }));
+    // bff-security's GlobalLimiter, with this route exempted: the named policy above is its real control
+    o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+        ctx.Request.Path.StartsWithSegments("/webhooks/paypal")
+            ? RateLimitPartition.GetNoLimiter("paypal-webhook")
+            : RateLimitPartition.GetFixedWindowLimiter(               // bff-security's per-user / per-IP partition, unchanged
+                ctx.User.FindFirstValue(ClaimTypes.NameIdentifier) is { } userId ? $"u:{userId}"
+                    : $"ip:{ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown"}",
+                _ =>
+                {
+                    var limits = ctx.RequestServices.GetRequiredService<IOptions<GlobalRateLimitOptions>>().Value;
+                    return new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = limits.PermitLimit, Window = TimeSpan.FromSeconds(limits.WindowSeconds), QueueLimit = 0,
+                    };
+                }));
 });
 
 static (string? Id, string? Type, string? ResourceId) TryReadEnvelope(string body)
@@ -202,9 +226,25 @@ static string HeadersToJson(IHeaderDictionary headers)
     return Encoding.UTF8.GetString(buffer.WrittenSpan);
 }
 
-// SQL Server: 2601/2627. PostgreSQL (Npgsql): PostgresException.SqlState == "23505".
-static bool IsUniqueViolation(DbUpdateException ex) =>
-    ex.InnerException is SqlException { Number: 2601 or 2627 };
+// Keep the arm for your provider (each needs its package). Missing it turns every duplicate into a 500 → PayPal retries.
+static bool IsUniqueViolation(DbUpdateException ex) => ex.InnerException switch
+{
+    SqlException { Number: 2601 or 2627 } => true,                                     // SQL Server: unique index / unique constraint (PK)
+    PostgresException { SqlState: PostgresErrorCodes.UniqueViolation } => true,         // PostgreSQL (Npgsql): 23505
+    _ => false,
+};
+```
+
+`Security/RateLimitOptions.cs` — next to bff-security's `GlobalRateLimitOptions` / `AuthRateLimitOptions`:
+
+```csharp
+public sealed class PayPalWebhookRateLimitOptions
+{
+    public const string Section = "RateLimiting:PayPalWebhook";
+    [Range(1, 1_000_000)] public int PermitLimit { get; set; } = 300;   // well above your real peak event rate
+    [Range(1, 3_600)] public int WindowSeconds { get; set; } = 60;
+}
+[OptionsValidator] public partial class PayPalWebhookRateLimitOptionsValidator : IValidateOptions<PayPalWebhookRateLimitOptions>;
 ```
 
 - The entity maps PascalCase properties to the snake_case columns of [inbox-table.md](inbox-table.md)
@@ -213,13 +253,35 @@ static bool IsUniqueViolation(DbUpdateException ex) =>
   `SignatureStatus`).
 - **Duplicate event id:** the three branches above are what keeps a forged event that reused a real
   event id from swallowing the genuine one — the processor must set `signature_status` (1 valid /
-  2 invalid) when it verifies. A test should cover forged-first-then-genuine for both the Rejected and the
-  still-unverified case.
+  2 invalid) when it verifies. Only a row with `signature_status = 1` makes a duplicate a plain 200: a row
+  parked as `DeadLetter` while still unverified (poison row, or verification kept failing until max
+  attempts) is treated like `Rejected` — the next delivery replaces it and is verified afresh. If that next
+  delivery is the forgery, it ends `Rejected` and the genuine retry after it replaces it again; once PayPal
+  stops retrying, reconciliation covers the rest. A test should cover forged-first-then-genuine for the
+  Rejected, the parked-unverified and the still-in-flight (503) case.
 - The endpoint is anonymous by necessity. Unlike HMAC-signed webhooks it does **not** verify at the door:
   PayPal's RSA signature is checked asynchronously in the processor, so a verification bug or a PayPal
-  cert outage never loses an event. Its protection at ingress is the body cap above plus a
-  **global fixed-window rate limiter** on this route (PayPal publishes no stable source IPs to
-  partition or allow-list on), sized well above your real event rate.
+  cert outage never loses an event. Its protection at ingress is the body cap above plus **one
+  fixed-window limiter for the whole route** (`RateLimiting:PayPalWebhook:PermitLimit` / `:WindowSeconds`,
+  defaults 300 / 60, validated on start), sized well above your real event rate. It is not partitioned per
+  IP: PayPal publishes IP ranges ([help article ts1056](https://www.paypal.com/us/cshelp/article/what-are-the-ip-addresses-for-paypal-nvpsoap-servers-ts1056))
+  but advises against allow-listing them, and doesn't document them as webhook sender addresses.
+- **Middleware order:** `RequireRateLimiting` is endpoint metadata, so `app.UseRateLimiter()` must run
+  after routing (implicit in a minimal-API `WebApplication`, or after an explicit `UseRouting()`) —
+  before it, the middleware can't see which policy applies. Place it where
+  [bff-security](../../bff-security/SKILL.md#security-headers--middleware-order) puts it: after
+  `UseAuthentication()`, before `UseAuthorization()`. This anonymous route's limiter has no identity
+  partition, so the auth position doesn't change its behavior — but one `UseRateLimiter()` serves every
+  policy, and the user-partitioned ones need it after authentication.
+- **Exempt the route from bff-security's global limiter** (the `GetNoLimiter` branch above — same pattern
+  as the Discord routes). `RequireRateLimiting("paypal-webhook")` adds an endpoint policy; it does not replace
+  `o.GlobalLimiter` (per-user / per-IP, `RateLimiting:Global`, in
+  [bff-security](../../bff-security/references/best-practices.md#rate-limiting-microsoft-learn-rate-limiting-middleware)),
+  and a request would need both leases. PayPal delivers from a pool of shared addresses, and behind a proxy
+  without correct `UseForwardedHeaders` every delivery lands in one partition — 100/min would silently
+  become the limit for all of PayPal. Don't use `DisableRateLimiting()` instead: it is all-or-nothing and
+  skips the named policy too. If the app also hosts Discord routes, keep both path checks in the one
+  partitioner. PayPal treats a 429 like any non-2xx and retries, so a modest limit only delays delivery.
 - **The global limiter is itself an attack surface:** anyone can fill the window with junk and push
   genuine PayPal deliveries into 429s. Those are retried (up to 25 times over 3 days), so a short flood
   only delays events; a sustained one can exhaust the retries. Alert on the **429 rate on this route**,
@@ -271,6 +333,7 @@ static bool IsSingleJsonObject(string json)
 
 static string Q(string value) => $"\"{JsonEncodedText.Encode(value)}\"";   // JSON string literal, no reflection
 
+// webhookId: PayPalOptions.WebhookId (one app) or the tenant's, resolved from request_path (one app per tenant)
 // if (BuildVerifyRequest(headers, webhookId, row.Body) is not { } json) → Rejected
 // var content = new StringContent(json, Encoding.UTF8, "application/json");
 // POST to {baseUrl}/v1/notifications/verify-webhook-signature with a cached OAuth bearer token.
@@ -291,6 +354,7 @@ certificate comes from `PAYPAL-CERT-URL` and should be cached.
 //   services.AddHttpClient("paypal-certs").ConfigurePrimaryHttpMessageHandler(
 //       () => new SocketsHttpHandler { AllowAutoRedirect = false });
 //   services.AddSingleton<PayPalSignatureVerifier>();
+//   services.AddSingleton(TimeProvider.System);   // not registered by the framework - without it Build() fails in Development (ValidateOnBuild), the first resolve throws in Production
 // trustCheck: tests pass their own (self-signed certs don't chain); production uses the default
 public sealed class PayPalSignatureVerifier(IHttpClientFactory httpClientFactory, TimeProvider clock,
                                            Func<X509Certificate2, X509Certificate2Collection, bool>? trustCheck = null)
@@ -419,7 +483,8 @@ the API's current state, not the event's — a verified event can still be stale
 | `GET /v1/notifications/webhooks-events?event_type=…&start_time=…` | Finding what PayPal sent vs. what you stored | — |
 
 Automated tests: feed recorded real sandbox deliveries (body + headers) into the endpoint and assert
-(a) one row per event id, (b) duplicates return 200 without a second row, (c) unparseable bodies are
+(a) one row per event id, (b1) a duplicate of a verified row returns 200 without a second row,
+(b2) a duplicate of a pending/unverified row returns 503 without a second row, (c) unparseable bodies are
 still stored, (d) the processor books once even when the capture response and the webhook both arrive,
 (e) `PENDING` followed by `COMPLETED` for the same capture ends `COMPLETED`, (f) a captured amount that
 differs from the expected one is not booked. Unit-test the offline verifier with a test CA + leaf `CN=messageverificationcerts.paypal.com` (the

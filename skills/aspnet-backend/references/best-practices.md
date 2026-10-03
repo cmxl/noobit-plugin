@@ -11,7 +11,7 @@ https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-ote
 
 Patch numbers rotate monthly — check nuget.org / the .NET release notes for the current ones; the values below are the state at verification.
 
-- **.NET 10** — LTS, supported 2025-11-11 → 2028-11-14. Runtime patch **10.0.12** (2026-09-08); SDKs **10.0.401** (4xx band) and 10.0.112 (1xx band). A `global.json` pin of `10.0.100` + `"rollForward": "latestFeature"` resolves to the newest installed feature band — still valid.
+- **.NET 10** — LTS, supported 2025-11-11 → 2028-11-14. Runtime patch **10.0.12** (2026-09-08); SDKs **10.0.401** (4xx band) and 10.0.112 (1xx band). Pin the exact SDK in `global.json` with `"rollForward": "latestPatch"` (e.g. `10.0.401` → any installed 10.0.4xx ≥ 401, never another feature band) and use the matching `mcr.microsoft.com/dotnet/sdk:10.0.4xx` tag in the Dockerfile — rule in SKILL.md → Repo-root build files. Both tags exist on MCR (`10.0.400`, `10.0.401`).
 - **C# 14** ships with .NET 10: `field`-backed properties, `extension` blocks, null-conditional assignment (`?.=`), first-class `Span<T>` conversions, unbound-generic `nameof`.
 - **Microsoft.Extensions.Http.Resilience 10.x** (10.10.0 at verification) — versions track .NET 10.x minor releases; check nuget.org.
 - **OpenTelemetry 1.19.x** (Extensions.Hosting / Exporter.OpenTelemetryProtocol 1.19.1, Instrumentation.AspNetCore / .Http 1.19.0 at verification) — keep all `OpenTelemetry.*` packages on the same minor; check nuget.org.
@@ -28,69 +28,44 @@ var app = builder.Build();
 
 app.UseForwardedHeaders();       // 0. behind nginx: first, so scheme/IP are right for everything below
                                  //    (KnownIPNetworks/KnownProxies config: see nginx-deploy)
+app.UseExceptionHandler();       // 1. ALL environments: IExceptionHandler + ProblemDetails catch everything downstream
 if (!app.Environment.IsDevelopment())
-{
-    app.UseExceptionHandler();   // 1. catches everything downstream
     app.UseHsts();               //    non-dev + HTTPS only
-}
 app.UseStatusCodePages();        //    bodiless 4xx/5xx (404, 405, …) → ProblemDetails (with AddProblemDetails)
 app.UseHttpsRedirection();       // 2.
-app.MapStaticAssets();           // 3. short-circuits static requests
-app.UseRouting();                // 4. (implicit at pipeline start if omitted)
-app.UseCors();                   // 5. CORS → AuthN → AuthZ order is mandatory
-app.UseAuthentication();         // 6.
+app.UseRouting();                // 3. (implicit at pipeline start if omitted)
+app.UseCors();                   // 4. ONLY if a cross-origin surface exists (the same-origin cookie BFF has none);
+                                 //    when present, CORS → AuthN → AuthZ order is mandatory
+app.UseAuthentication();         // 5.
 app.UseRateLimiter();            //    after AuthN so identity partitions see the user (bff-security);
                                  //    a purely IP-based global limiter could sit earlier
-app.UseAuthorization();          // 7.
+// app.Use(… XSRF-TOKEN mint …)  //    cookie BFF: HERE, between AuthN and AuthZ so a 401 still carries the
+                                 //    cookie (exact app.Use block: bff-security → CSRF)
+app.UseAuthorization();          // 6.
 app.UseRequestTimeouts();        //    after UseRouting
 app.UseOutputCache();            //    after CORS + AuthN/AuthZ, or cached content can leak to unauthorized users
-app.MapOpenApi();                // 8. endpoints last (gate behind IsDevelopment() if the API isn't public)
-app.MapOrderEndpoints();
+app.MapStaticAssets()            // 7. endpoints last. MapStaticAssets is an ENDPOINT (not short-circuiting
+   .AllowAnonymous();            //    middleware): it runs after AuthZ, so a fallback policy applies to it
+if (app.Environment.IsDevelopment())
+    app.MapOpenApi().AllowAnonymous();   // dev-only unless the API is public
+var api = app.MapGroup("/api");  //    + antiforgery endpoint filter (bff-security → CSRF); every feature maps INTO it
+api.MapOrderEndpoints();
 ```
+
+`UseExceptionHandler` is unconditional: the same `IExceptionHandler` + ProblemDetails responses in every environment (in Development, `WebApplication` adds the developer exception page outside it — it only sees what the handler doesn't handle). Under the BFF's fallback authorization policy (`bff-security`), every endpoint without authorization metadata requires an authenticated user — static assets, `MapFallbackToFile` and health checks need an explicit `.AllowAnonymous()`; files served by `UseStaticFiles()` placed *before* `UseAuthorization` are not affected (documented).
 
 Documented constraints: `UseCors` must precede `UseResponseCaching`; `UseOutputCache` must follow `UseCors`, `UseAuthentication` and `UseAuthorization`; `UseRequestLocalization` must precede anything reading culture (e.g. static files); global-only rate limiters may sit before `UseRouting`. Caching/compression mutual order is scenario-specific.
 
 ### Minimal APIs at scale — route groups + TypedResults
 
-Official organization pattern: endpoints out of `Program.cs`, one static mapping extension per feature, group-level metadata applied once via `MapGroup` (nested groups compose; group filters run outer → inner):
-
-```csharp
-namespace App.Api.Features.Orders;
-
-public static class OrderEndpoints
-{
-    public static IEndpointRouteBuilder MapOrderEndpoints(this IEndpointRouteBuilder app)
-    {
-        var group = app.MapGroup("/api/orders")
-            .RequireAuthorization()
-            .WithTags("Orders");
-
-        group.MapGet("/{id:guid}", GetById);
-        group.MapPost("/", Create);
-        return app;
-    }
-
-    private static async Task<Results<Ok<OrderResponse>, NotFound>> GetById(
-        Guid id, IOrderService service, CancellationToken ct) =>
-        await service.GetAsync(id, ct) is { } order
-            ? TypedResults.Ok(order.ToResponse())   // DTO projection — never the entity
-            : TypedResults.NotFound();
-
-    private static async Task<Created<OrderResponse>> Create(
-        CreateOrderRequest request, IOrderService service, CancellationToken ct)
-    {
-        var order = await service.CreateAsync(request, ct);
-        return TypedResults.Created($"/api/orders/{order.Id}", order.ToResponse());
-    }
-}
-```
+Official organization pattern: endpoints out of `Program.cs`, one static mapping extension per feature on the shared `/api` group (`api.MapOrderEndpoints()` — canonical sample in SKILL.md → Endpoints; a sibling `app.MapGroup("/api/orders")` would bypass the group's antiforgery filter), group-level metadata applied once via `MapGroup` (nested groups compose; group filters run outer → inner). Handlers return DTO projections (`order.ToResponse()`), never entities.
 
 New in ASP.NET Core 10 (release notes):
 
 - **Built-in validation** (the default): `builder.Services.AddValidation();` — DataAnnotations / `IValidatableObject` on query, header and body parameters (classes and records), automatic 400 `ValidationProblem` (formatted by `IProblemDetailsService`); opt out per endpoint with `.DisableValidation()`. Package: `Microsoft.Extensions.Validation`. A source generator discovers types **only in the assembly that calls `AddValidation`** — undiscovered types are silently not validated (no exception, no log).
 - **Server-Sent Events**: `TypedResults.ServerSentEvents(source)` over an `IAsyncEnumerable<T>` / `SseItem<T>` stream.
 - **OpenAPI**: `AddOpenApi()` emits 3.1 by default; `app.MapOpenApi("/openapi/{documentName}.yaml")` serves YAML; XML doc comments flow into the document when `<GenerateDocumentationFile>` is enabled.
-- **Cookie auth for APIs**: unauthenticated API requests (minimal APIs with JSON/TypedResults) now get 401/403 instead of login redirects — no manual `OnRedirectToLogin` override needed.
+- **Cookie auth for APIs**: endpoints the framework *detects* as API (JSON body/response, `TypedResults`, `[ApiController]`, SignalR) get 401/403 instead of login redirects. Detection is metadata-based — handlers returning `string`/`IResult`, and YARP routes, still redirect — so the cookie BFF keeps `.DisableCookieRedirect()` on the `/api` group and the `RedirectToLogin`/`RedirectToAccessDenied` overrides (`bff-security` owns this).
 
 ### FluentValidation — only where DataAnnotations can't express the rule
 
@@ -140,7 +115,7 @@ internal sealed class GlobalExceptionHandler(
 
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
-// pipeline: app.UseExceptionHandler(); app.UseStatusCodePages();
+// pipeline (all environments): app.UseExceptionHandler(); app.UseStatusCodePages();
 ```
 
 - Registering a handler is not enough — without `app.UseExceptionHandler()` it never runs.
@@ -164,9 +139,9 @@ builder.Services.ConfigureHttpJsonOptions(static o =>
 
 - **Async all the way**: no `Task.Wait`/`.Result`, no locks on hot paths, and no `Task.Run` in handlers — request code already runs on pool threads; sync-over-async causes thread-pool starvation. (Exception: work that must outlive the response, e.g. finishing a deferred Discord interaction — see `discord`.)
 - **Kestrel does not support synchronous body reads.** Read/write bodies asynchronously; prefer `JsonSerializer.DeserializeAsync(Request.Body)` over buffering; use `Request.ReadFormAsync()` — `Request.Form` without it is sync-over-async.
-- **Large object heap**: allocations ≥ 85,000 bytes go to the LOH and need Gen 2 collections. Don't buffer large request/response bodies into a single `byte[]`/`string`; pool big buffers with `ArrayPool<T>.Shared`; cache frequently used large objects. (.NET 10's `IMemoryPoolFactory<T>` lives in `Microsoft.AspNetCore.Connections` — the server/transport pool abstraction behind Kestrel's auto-evicting pools, metrics under the `Microsoft.AspNetCore.MemoryPool` meter; it isn't the tool for application buffers.)
+- **Large object heap**: allocations ≥ 85,000 bytes go to the LOH and need Gen 2 collections. Don't buffer large request/response bodies into a single `byte[]`/`string`; pool big buffers with `ArrayPool<T>.Shared`; cache frequently used large objects. (.NET 10 also exposes `IMemoryPoolFactory<byte>` (`Microsoft.AspNetCore.Connections`) through DI: pools created from it get the same idle-time eviction as Kestrel's, metrics under the `Microsoft.AspNetCore.MemoryPool` meter — an option for long-lived components that hold a `MemoryPool<byte>`; `ArrayPool<T>.Shared` stays the default for short-lived buffers.)
 - **Streaming over buffering**: return `IAsyncEnumerable<T>` (async enumeration by the serializer) instead of `IEnumerable<T>` (sync, blocking); paginate large collections rather than returning them whole.
-- **Pooling**: never new-up/dispose `HttpClient` per call (socket exhaustion) — always `IHttpClientFactory`; consider `DbContext` pooling and compiled queries only after measuring.
+- **Pooling**: never new-up/dispose `HttpClient` per call (socket exhaustion) — always `IHttpClientFactory`; `DbContext` pooling is the stack default (`AddPooledDbContextFactory` — `data-access`); compiled queries only after measuring.
 - **Data access**: async APIs only; project to just the needed columns (DTOs); no-tracking queries for reads; filter/aggregate in the database; watch for client evaluation and N+1 from collection projections.
 - **Exceptions are for the exceptional** — never normal control flow; on hot paths detect conditions instead of catching.
 - **HttpContext discipline**: it is not thread-safe — copy what you need before `Task.WhenAll` fan-out; never store `IHttpContextAccessor.HttpContext` in a field; never touch it after the response completes (`async void` handlers crash the process); check `Response.HasStarted` (or use `OnStarting`) before touching headers/status; `Request.ContentLength` may be `null` — `null > limit` comparisons silently pass.
@@ -187,13 +162,15 @@ builder.Services.AddHttpClient<CatalogClient>(static c =>
     .AddStandardResilienceHandler(static o => o.Retry.DisableForUnsafeHttpMethods());
 ```
 
-Standard pipeline, outermost → innermost (defaults): rate limiter (1000 concurrent) → total timeout 30 s → retry (3×, exponential + jitter, 2 s base) → circuit breaker (10 % failure ratio, 100 min throughput, 30 s sampling, 5 s break) → attempt timeout 10 s. Retries/breaker trigger on HTTP 500+, 408, 429, `HttpRequestException`, `TimeoutRejectedException`. Retries apply to **all** HTTP methods by default — disable for non-idempotent verbs as above. Set a default for every client, override per client:
+Standard pipeline, outermost → innermost (defaults): rate limiter (1000 concurrent) → total timeout 30 s → retry (3×, exponential + jitter, 2 s base) → circuit breaker (10 % failure ratio, 100 min throughput, 30 s sampling, 5 s break) → attempt timeout 10 s. Retries/breaker trigger on HTTP 500+, 408, 429, `HttpRequestException`, `TimeoutRejectedException`. Retries apply to **all** HTTP methods by default — disable for non-idempotent verbs as above (`DisableForUnsafeHttpMethods()` is stable API, no `EXTEXP0001` suppression needed — unlike `RemoveAllResilienceHandlers()` below). Set a default for every client, override per client:
 
 ```csharp
 builder.Services.ConfigureHttpClientDefaults(static b => b.AddStandardResilienceHandler());
+#pragma warning disable EXTEXP0001   // RemoveAllResilienceHandlers is [Experimental] — a build error without this
 builder.Services.AddHttpClient("hedged")
     .RemoveAllResilienceHandlers()
     .AddStandardHedgingHandler();   // parallel hedging for latency-critical GETs
+#pragma warning restore EXTEXP0001
 ```
 
 Use `AddResilienceHandler("name", ...)` with Polly strategy options only when the standard handler genuinely doesn't fit.
@@ -277,7 +254,7 @@ finally { await Log.CloseAndFlushAsync(); }
 
 Do **not** add `builder.Logging.AddOpenTelemetry(...)` alongside Serilog: `AddSerilog` doesn't forward events to other `ILoggerProvider`s by default (`writeToProviders: false`), so those OTLP logs silently go nowhere. Use the Serilog sink (above), or — only if the OTel logging provider is genuinely needed — `AddSerilog(..., writeToProviders: true)`.
 
-OTLP is the vendor-neutral default; configure endpoint/resource via standard `OTEL_*` environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` — the Serilog sink reads these too, and they override values set in code). ASP.NET Core 10 adds built-in meters for authentication/authorization (`Microsoft.AspNetCore.Authentication`/`.Authorization`), Identity, and memory pools — they light up automatically with `AddAspNetCoreInstrumentation`. Docs note the Aspire `ServiceDefaults` project (`dotnet new aspire-servicedefaults`) as the fastest correct OTel bootstrap even without Aspire orchestration.
+OTLP is the vendor-neutral default; configure the OTel SDK (traces/metrics) via standard `OTEL_*` environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`). The Serilog sink recognizes only "a selection of" the `OTEL_EXPORTER_OTLP_*` variables (README; they override code unless disabled) — set its `service.name` explicitly via `options.ResourceAttributes` so logs and traces share one service identity (sample in [observability.md](observability.md)). ASP.NET Core 10 adds built-in meters for authentication/authorization (`Microsoft.AspNetCore.Authentication`/`.Authorization`), Identity, and memory pools — they light up automatically with `AddAspNetCoreInstrumentation`. Docs note the Aspire `ServiceDefaults` project (`dotnet new aspire-servicedefaults`) as the fastest correct OTel bootstrap even without Aspire orchestration.
 
 ## Anti-patterns (documented, with fix)
 
@@ -295,7 +272,7 @@ OTLP is the vendor-neutral default; configure endpoint/resource via standard `OT
 | Capturing `HttpContext`/scoped services in background work | Copy needed values; `IServiceScopeFactory.CreateAsyncScope()` inside the task |
 | Mutating headers/status after response start | Check `Response.HasStarted` or register `Response.OnStarting` |
 | Exceptions as control flow | Detect and handle expected conditions; exceptions stay rare |
-| Custom auth-failure redirect handling for APIs | ASP.NET Core 10 cookie auth returns 401/403 for API endpoints automatically |
+| Relying on .NET 10's automatic 401/403 for every API endpoint | Detection is metadata-based (`string`/`IResult` handlers and YARP still 302) — `.DisableCookieRedirect()` on `/api` + redirect overrides in the events class (`bff-security`) |
 | `Request.ContentLength > limit` as a size guard | It's `null` without a `Content-Length` header — handle `null` explicitly |
 | Blocking in `StartAsync` / ignoring `stoppingToken` | Short `StartAsync`; loop on `stoppingToken`, exit promptly on cancellation |
 | Unpaced/unguarded worker loop | `PeriodicTimer` or channel `ReadAllAsync` + per-iteration `try/catch` with logging |

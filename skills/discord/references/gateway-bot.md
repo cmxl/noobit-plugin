@@ -1,18 +1,15 @@
 # Gateway bot — reference implementation
 
 A long-running bot on the gateway with the Interaction Framework, hosted in the .NET Generic Host.
-**This code compiles against Discord.Net 3.20.1 and is covered by the tests in [testing.md](testing.md)**;
-a startup smoke test against Discord confirmed that a bad token fails startup instead of looping.
+Code under a `File.cs` heading targets Discord.Net 3.20.1; `// excerpt` blocks are illustrations. Tests:
+[testing.md](testing.md).
 
-## Contents
-1. Solution layout & packages
-2. Options & secrets
-3. DI registration
-4. Hosted service (lifecycle, registration, error replies, fatal disconnects)
-5. Log bridge
-6. Modules
-7. Sharding & scaling notes
-8. Production checklist
+Code blocks omit `using` directives (add the System.*, Discord.*, Microsoft.Extensions.* and `MyApp.*` namespaces the
+types come from); the file-scoped namespace shows which project a file belongs to.
+
+**Contents:** 1 Solution layout & packages · 2 Options & secrets · 3 DI registration · 4 Hosted service
+(lifecycle, registration, error replies, fatal disconnects) · 5 Log bridge · 6 Modules · 7 Sharding & scaling
+notes · 8 Production checklist
 
 ## 1. Solution layout & packages
 
@@ -28,59 +25,47 @@ tests/
 Keeping cards, custom ids, modals and autocomplete handlers in a shared library means both hosting modes
 reuse them, and the pure builders are unit-testable without Discord.
 
-`Directory.Packages.props` (central package management — pin Discord.Net to the version you verified against,
-use the latest 10.0.x patch for Microsoft.Extensions.*):
+Central package management (`noobit:aspnet-backend`): versions live only in `Directory.Packages.props` — pin
+Discord.Net to the version you verified against, use the latest 10.0.x patch for Microsoft.Extensions.*:
 
 ```xml
-<PackageVersion Include="Discord.Net.Interactions" Version="3.20.1" />  <!-- pulls Core + Rest -->
-<PackageVersion Include="Discord.Net.WebSocket" Version="3.20.1" />     <!-- gateway; only the bot project -->
-<PackageVersion Include="Discord.Net.Webhook" Version="3.20.1" />       <!-- only if you post via webhook URLs -->
-<PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
-<PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
-<PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.12" />
-```
-
-Project files of the reference build (shown with versions as built; under CPM drop the `Version` attributes).
-The SDK choice matters: the code relies on implicit usings — `Microsoft.NET.Sdk.Worker` brings the
-`IServiceCollection`/`ILogger<T>`/hosting usings for the bot, `Microsoft.NET.Sdk.Web` adds
-`StatusCodes`/`HttpContext` for the HTTP app. Keep `Program` of the worker internal so the tests'
-`WebApplicationFactory<Program>` resolves to the web app's public `Program`.
-
-`MyApp.Discord.csproj`
-
-```xml
-<Project Sdk="Microsoft.NET.Sdk">
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Discord.Net.Interactions" Version="3.20.1" />
-    <PackageReference Include="Discord.Net.Webhook" Version="3.20.1" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.12" />
+    <PackageVersion Include="Discord.Net.Interactions" Version="3.20.1" />  <!-- pulls Core + Rest -->
+    <PackageVersion Include="Discord.Net.WebSocket" Version="3.20.1" />     <!-- gateway; only the bot project -->
+    <PackageVersion Include="Discord.Net.Webhook" Version="3.20.1" />       <!-- only if you post via webhook URLs -->
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.12" />  <!-- [OptionsValidator] generator -->
   </ItemGroup>
 </Project>
 ```
 
-`MyApp.Bot.csproj`
+Project files reference packages without versions. The SDK choice matters: the code relies on implicit usings —
+`Microsoft.NET.Sdk.Worker` brings the `IServiceCollection`/`ILogger<T>`/hosting usings for the bot,
+`Microsoft.NET.Sdk.Web` adds `StatusCodes`/`HttpContext` for the HTTP app. Keep `Program` of the worker internal
+so the tests' `WebApplicationFactory<Program>` resolves to the web app's public `Program`.
 
 ```xml
-<Project Sdk="Microsoft.NET.Sdk.Worker">
-  <ItemGroup>
-    <ProjectReference Include="..\MyApp.Discord\MyApp.Discord.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="Discord.Net.WebSocket" Version="3.20.1" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
-  </ItemGroup>
-</Project>
-```
+<!-- MyApp.Discord.csproj (Sdk="Microsoft.NET.Sdk") -->
+<ItemGroup>
+  <PackageReference Include="Discord.Net.Interactions" />
+  <PackageReference Include="Discord.Net.Webhook" />
+  <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  <PackageReference Include="Microsoft.Extensions.Options" />
+</ItemGroup>
 
-`MyApp.Interactions.csproj`
+<!-- MyApp.Bot.csproj (Sdk="Microsoft.NET.Sdk.Worker") -->
+<ItemGroup>
+  <ProjectReference Include="..\MyApp.Discord\MyApp.Discord.csproj" />
+  <PackageReference Include="Discord.Net.WebSocket" />
+  <PackageReference Include="Microsoft.Extensions.Hosting" />
+</ItemGroup>
 
-```xml
-<Project Sdk="Microsoft.NET.Sdk.Web">
-  <ItemGroup>
-    <ProjectReference Include="..\MyApp.Discord\MyApp.Discord.csproj" />
-  </ItemGroup>
-</Project>
+<!-- MyApp.Interactions.csproj (Sdk="Microsoft.NET.Sdk.Web"): only the ProjectReference to MyApp.Discord -->
 ```
 
 Reference the granular packages, not the `Discord.Net` metapackage (it also drags in the legacy
@@ -107,18 +92,36 @@ public sealed class DiscordOptions
 {
     public const string SectionName = "Discord";
 
-    /// <summary>Bot token (Developer Portal → Bot). Secret: user-secrets / env var <c>Discord__Token</c>, never appsettings.</summary>
+    /// <summary>Bot token (Developer Portal → Bot). Secret: user-secrets (dev), secret file <c>/run/secrets/Discord__Token</c> (prod), never appsettings.
+    /// Required or not depends on the hosting mode — checked at registration (SKILL.md "Stack fit").</summary>
     public string Token { get; init; } = "";
 
-    /// <summary>Hex Ed25519 public key (Developer Portal → General Information). Required for HTTP interactions only.</summary>
+    /// <summary>Hex Ed25519 public key (Developer Portal → General Information). Needed by every endpoint Discord signs
+    /// (HTTP interactions, Webhook Events) — required by those registrations; empty passes here.</summary>
+    [RegularExpression("^[0-9a-fA-F]{64}$", ErrorMessage = "Discord:PublicKey must be the 64-char hex public key")]
     public string PublicKey { get; init; } = "";
+
+    /// <summary>OAuth2 client id (Portal → OAuth2) — account linking only (app-integration.md §6); empty passes here.</summary>
+    [RegularExpression("^[0-9]{17,20}$", ErrorMessage = "Discord:ClientId must be the application's snowflake id")]
+    public string ClientId { get; init; } = "";
+
+    /// <summary>OAuth2 client secret — a secret like <see cref="Token"/>; account linking only.</summary>
+    public string ClientSecret { get; init; } = "";
 
     /// <summary>When set, commands are registered to this guild only (instant updates) instead of globally.</summary>
     public ulong? DevGuildId { get; init; }
 
+    /// <summary>Registration is a bulk overwrite: only ONE process per application — the one owning the interaction
+    /// modules — may register. Set <c>false</c> on any other module-owning process (app-integration.md §3).</summary>
+    public bool RegisterCommands { get; init; } = true;
+
     /// <summary>Channel the application posts announcements to.</summary>
     public ulong? AnnouncementChannelId { get; init; }
 }
+
+/// <summary>Source-generated, reflection-free validator for the DataAnnotations above.</summary>
+[OptionsValidator]
+public sealed partial class DiscordOptionsValidator : IValidateOptions<DiscordOptions>;
 ```
 
 ```jsonc
@@ -128,7 +131,9 @@ public sealed class DiscordOptions
 
 ```bash
 dotnet user-secrets set "Discord:Token" "<bot token>"     # local
-# container: Discord__Token from the orchestrator's secret store
+# container: compose `secrets:` → /run/secrets/Discord__Token, read by
+# builder.Configuration.AddKeyPerFile("/run/secrets", optional: true) — not a compose `environment:` value
+# (leaks via docker inspect; aspnet-backend references/configuration-secrets.md)
 ```
 
 Omit `DevGuildId` in production so commands register globally.
@@ -145,13 +150,6 @@ leaves the other set registered, so commands show up twice: overwrite the old sc
 `DiscordGatewayExtensions.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using Discord.WebSocket;
-using MyApp.Discord;
-using MyApp.Discord.Announcements;
-using MyApp.Discord.Search;
-
 namespace MyApp.Bot;
 
 public static class DiscordGatewayExtensions
@@ -160,8 +158,9 @@ public static class DiscordGatewayExtensions
     {
         services.AddOptions<DiscordOptions>()
             .BindConfiguration(DiscordOptions.SectionName)
-            .Validate(o => !string.IsNullOrWhiteSpace(o.Token), "Discord:Token is required")
+            .Validate(o => !string.IsNullOrWhiteSpace(o.Token), "Discord:Token is required") // mode-specific rule
             .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<DiscordOptions>, DiscordOptionsValidator>(); // DataAnnotations rules
 
         services.AddSingleton(new DiscordSocketConfig
         {
@@ -190,56 +189,30 @@ public static class DiscordGatewayExtensions
         services.AddSingleton<IAnnouncementQueue>(sp => sp.GetRequiredService<AnnouncementQueue>());
         services.AddHostedService<AnnouncementPublisher>();
 
-        services.AddSingleton<IDocsSearch, InMemoryDocsSearch>();
+        services.AddSingleton<IDocsSearch, DocsSearch>(); // your implementation (rich-ui.md §5)
         return services;
     }
 }
 ```
 
-`Program.cs`
-
-```csharp
-using MyApp.Bot;
-
-var builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddDiscordGateway();
-
-var host = builder.Build();
-await host.RunAsync();
-```
+`Program.cs` is `Host.CreateApplicationBuilder(args)` + `builder.Services.AddDiscordGateway()` + `RunAsync()`.
 
 Notes:
 - `DiscordSocketClient`, `InteractionService` are singletons; the container owns disposal. Hosted services
   only `StopAsync`/`LogoutAsync` — never dispose a shared client yourself.
 - Registering it as `IDiscordClient` lets application services (publisher, admin tools) depend on the
   interface — the same code then works with a `DiscordRestClient` in a web app and is mockable in tests.
-- **Where the bot runs: exactly one process per token** (or one sharded client). Inside an existing ASP.NET
-  Core app (same `AddDiscordGateway()` call) is fine only while that app runs a single replica — N replicas
-  mean N gateway connections, every event N times and double answers ("already acknowledged"). A multi-replica
-  app hosts the bot as a separate single-replica worker, or uses HTTP interactions.
-- **Health:** `/health/live` stays dependency-free (`noobit:aspnet-backend`). Never put `ConnectionState` into
-  liveness: a Discord outage would restart the bot, and each restart identifies again (identify budget →
-  token reset). Report it on `/health/ready` or as a metric.
+- **Where it runs** and **health**: SKILL.md "Choose the connection" and rule 11. Inside an existing ASP.NET
+  Core app the same `AddDiscordGateway()` call works — only while that app has one replica.
 
 ## 4. Hosted service
 
 `DiscordGatewayService.cs`
 
 ```csharp
-using System.Net;
-using Discord;
-using Discord.Interactions;
-using Discord.Net;
-using Discord.WebSocket;
-using Microsoft.Extensions.Options;
-using MyApp.Discord;
-
 namespace MyApp.Bot;
 
-/// <summary>
-/// Owns the gateway connection lifecycle. Events are subscribed exactly once here — never inside <c>Ready</c>,
-/// which fires again after every non-resumed reconnect.
-/// </summary>
+/// <summary>Owns the gateway lifecycle. Events are subscribed exactly once here — never inside <c>Ready</c>.</summary>
 public sealed class DiscordGatewayService(
     DiscordSocketClient client,
     InteractionService interactions,
@@ -262,7 +235,8 @@ public sealed class DiscordGatewayService(
         };
         client.Disconnected += StopOnFatalDisconnectAsync;
         client.InteractionCreated += HandleInteractionAsync;
-        interactions.InteractionExecuted += (command, context, result) => ReplyToFailureAsync(logger, command, context, result);
+        interactions.InteractionExecuted += (command, context, result) =>
+            InteractionErrors.HandleExecutedAsync(logger, command, context, result);
 
         // Modules are built now (needs every module dependency registered) — fails fast on bad attributes.
         await interactions.AddModulesAsync(typeof(DiscordGatewayService).Assembly, services);
@@ -282,16 +256,14 @@ public sealed class DiscordGatewayService(
         await client.LogoutAsync();
     }
 
-    /// <summary>
-    /// Discord.Net reconnects with backoff forever, except for close codes 4006/4014. A reset token (401 / 4004) or bad
-    /// intents/shard config (4010–4013) can never succeed and each attempt counts toward the invalid-request ban.
-    /// </summary>
+    /// <summary>401 / 4004 / 4010–4014 can never succeed (each retry counts toward the invalid-request ban); on 4006
+    /// Discord.Net stops reconnecting by itself, so the process would sit disconnected — restart it instead.</summary>
     public static bool IsFatal(Exception? exception)
     {
         for (var ex = exception; ex is not null; ex = ex.InnerException)
         {
             if (ex is HttpException { HttpCode: HttpStatusCode.Unauthorized }
-                || ex is WebSocketClosedException { CloseCode: 4004 or (>= 4010 and <= 4014) })
+                || ex is WebSocketClosedException { CloseCode: 4004 or 4006 or (>= 4010 and <= 4014) })
             {
                 return true;
             }
@@ -305,9 +277,7 @@ public sealed class DiscordGatewayService(
         if (IsFatal(exception))
         {
             logger.LogCritical(exception, "Discord gateway disconnected with a non-recoverable error — stopping the host");
-            // Exit non-zero and let the orchestrator alert. Restart with backoff, never in a tight loop: every restart
-            // identifies again, and exhausting the daily identify limit (~1000) makes Discord reset the bot token.
-            Environment.ExitCode = 2;
+            Environment.ExitCode = 2; // non-zero: the orchestrator alerts and restarts with backoff (SKILL.md rule 10)
             lifetime.StopApplication();
         }
 
@@ -316,7 +286,8 @@ public sealed class DiscordGatewayService(
 
     private async Task RegisterCommandsOnceAsync()
     {
-        if (Interlocked.Exchange(ref _commandsRegistered, 1) == 1)
+        // Bulk overwrite: only the one process that owns the modules registers (app-integration.md §3).
+        if (!options.Value.RegisterCommands || Interlocked.Exchange(ref _commandsRegistered, 1) == 1)
         {
             return;
         }
@@ -340,19 +311,43 @@ public sealed class DiscordGatewayService(
         }
     }
 
-    private async Task HandleInteractionAsync(SocketInteraction interaction)
-    {
-        // RunMode.Async (default): returns as soon as the command is dispatched — the gateway task is never blocked.
-        // Results (including precondition failures and exceptions) arrive in ReplyToFailureAsync.
-        var context = new SocketInteractionContext(client, interaction);
-        await interactions.ExecuteCommandAsync(context, services);
-    }
+    // RunMode.Async: returns once dispatched; all outcomes (failures, preconditions) arrive in InteractionExecuted.
+    private Task HandleInteractionAsync(SocketInteraction interaction) =>
+        interactions.ExecuteCommandAsync(new SocketInteractionContext(client, interaction), services);
+}
+```
 
-    /// <summary>
-    /// InteractionExecuted handler (also used by <see cref="ShardedGatewayService"/>): logs the failure and always tells
-    /// the user something, privately.
-    /// </summary>
-    public static async Task ReplyToFailureAsync(ILogger logger, ICommandInfo? command, IInteractionContext context, IResult result)
+Why it's built this way (beyond SKILL.md rules 3, 4, 10):
+- **Registration** is retried on the next `Ready` if it failed; bulk overwrite makes renamed/removed commands
+  disappear. `Task.Run` because `Ready` executes on the gateway task — awaiting REST there blocks heartbeats.
+- **Token check**: don't use `client.Rest.GetCurrentUserAsync()` — on the socket client it dereferences
+  `CurrentUser` (null until READY) and throws on a *valid* token. (A plain `DiscordRestClient.LoginAsync` does
+  validate.)
+- **Fatal disconnects**: Discord.Net's backoff is 1 s doubling to 60 s with jitter, forever. Configure restarts
+  **with backoff and a cap** (Docker `restart: on-failure:5`, Kubernetes CrashLoopBackOff) and alert.
+- **Error replies** never go public: a follow-up right after a public "thinking…" defer would *edit* that
+  placeholder (deprecated Discord behaviour that ignores the ephemeral flag) — hence `InteractionErrors` below.
+- `AutoServiceScopes` (default `true`) creates one DI scope per execution, so scoped services such as
+  `DbContext` are safe to inject into **modules** (built per execution). Don't start background work from a
+  module that captures them.
+- **Autocomplete handlers, type converters and precondition attributes are singletons** (built once, cached):
+  resolve scoped services per call from the `services` argument — the per-execution scope (`DocsAutocomplete`
+  in rich-ui.md).
+
+Error replies (shared library; the HTTP host subscribes the same handler):
+
+`InteractionErrors.cs`
+
+```csharp
+namespace MyApp.Discord;
+
+/// <summary>
+/// Error replies for both hosting modes: always tell the user something, never publicly, never leak details.
+/// </summary>
+public static class InteractionErrors
+{
+    /// <summary><c>InteractionExecuted</c> handler — gateway, sharded and HTTP hosts subscribe the same method.</summary>
+    public static async Task HandleExecutedAsync(ILogger logger, ICommandInfo? command, IInteractionContext context, IResult result)
     {
         if (result.IsSuccess)
         {
@@ -360,20 +355,20 @@ public sealed class DiscordGatewayService(
         }
 
         var interaction = context.Interaction;
-        string userMessage;
+        string message;
         switch (result.Error)
         {
             case InteractionCommandError.UnmetPrecondition:
-                userMessage = result.ErrorReason; // precondition messages are written for users
+                message = result.ErrorReason; // precondition messages are written for users
                 break;
             case InteractionCommandError.UnknownCommand:
                 logger.LogWarning("Unknown interaction {InteractionType} — stale command registration?", interaction.Type);
-                userMessage = "This command is no longer available.";
+                message = "This command is no longer available.";
                 break;
             default:
                 logger.LogError((result as ExecuteResult?)?.Exception,
                     "Interaction {Command} failed: {Error} {Reason}", command?.Name, result.Error, result.ErrorReason);
-                userMessage = "Something went wrong. Please try again later."; // never leak exception details
+                message = "Something went wrong. Please try again later."; // never leak exception details
                 break;
         }
 
@@ -382,64 +377,23 @@ public sealed class DiscordGatewayService(
             return; // autocomplete has no message to answer with
         }
 
+        // HTTP mode: the initial response must go through the endpoint callback — Respond() only builds JSON, and
+        // IDiscordInteraction.RespondAsync on a RestInteraction silently discards it. Later replies are REST calls.
+        var callback = (context as IRestInteractionContext)?.InteractionResponseCallback;
+        Func<IDiscordInteraction, string, Task>? sendInitial = callback is not null && interaction is RestInteraction rest
+            ? (_, text) => callback(rest.Respond(text, ephemeral: true, allowedMentions: AllowedMentions.None))
+            : null;
         try
         {
-            // Never "did not respond", never a public error (handles the deferred-placeholder case).
-            await InteractionErrors.ReplyAsync(interaction, userMessage);
+            await ReplyAsync(interaction, message, sendInitial);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Could not deliver error message for interaction {InteractionId}", interaction.Id);
         }
     }
-}
-```
 
-Why it's built this way:
-- **Handlers subscribed once in `StartAsync`.** `Ready` fires after every non-resumed reconnect; subscribing
-  there multiplies handlers.
-- **Registration once per process**, guarded, and retried on the next `Ready` if it failed. Bulk overwrite
-  means renamed/removed commands disappear from Discord automatically. It runs via `Task.Run` because `Ready`
-  executes on the gateway task — awaiting REST there blocks heartbeats and every other event.
-- **`GetApplicationInfoAsync` after login**: the socket client's `LoginAsync` only validates the token *format*
-  (and only warns); without a REST call a revoked token produces an endless reconnect loop of 401s. Don't use
-  `client.Rest.GetCurrentUserAsync()` for this — on the socket client it dereferences `CurrentUser`, which is
-  null until READY, and throws on a *valid* token. (A plain `DiscordRestClient.LoginAsync` does validate.)
-- **`StopOnFatalDisconnectAsync`**: Discord.Net retries every close code except 4006/4014 forever (backoff
-  1 s doubling to 60 s with jitter). Stopping the host with a non-zero exit code turns a silent loop into a
-  visible failure. Configure restarts **with backoff and a cap** (Docker `restart: on-failure:5`, Kubernetes
-  CrashLoopBackOff) and alert — each restart identifies again, and exhausting the daily identify limit
-  (`session_start_limit`, typically 1000/24 h) terminates all sessions and **resets the bot token**.
-- **`ExecuteCommandAsync` under `RunMode.Async`** returns as soon as a known command is dispatched; unknown
-  commands return an error immediately after raising `InteractionExecuted` inline. All outcomes are handled in
-  `ReplyToFailureAsync`, which always tells the user something and never publicly (`InteractionErrors` below:
-  a follow-up right after a public "thinking…" defer would *edit* that public placeholder — deprecated
-  Discord behaviour that ignores the ephemeral flag). `ThrowOnError = false` because failures are handled there.
-- `AutoServiceScopes` (default `true`) creates one DI scope per execution, so scoped services such as
-  `DbContext` are safe to inject into **modules** (built per execution). Don't start background work from a
-  module that captures them.
-- **Autocomplete handlers, type converters and precondition attributes are singletons**: the Interaction
-  Framework builds each once (autocomplete handlers with the provider passed to `AddModulesAsync`) and caches
-  it. Give them no scoped constructor dependencies — resolve per call from the `services` argument, which *is*
-  the per-execution scope (see `DocsAutocomplete` in rich-ui.md).
-
-Error reply helper (shared by gateway and HTTP mode):
-
-`InteractionErrors.cs`
-
-```csharp
-using Discord;
-
-namespace MyApp.Discord;
-
-/// <summary>
-/// Delivers an error message for a failed interaction without ever leaking it into a public message.
-/// </summary>
-public static class InteractionErrors
-{
-    /// <param name="sendInitialResponse">
-    /// HTTP mode only: the endpoint callback that turns <c>RestInteraction.Respond(...)</c> JSON into the HTTP response.
-    /// </param>
+    /// <param name="sendInitialResponse">HTTP mode only: turns <c>RestInteraction.Respond(...)</c> JSON into the HTTP response.</param>
     public static async Task ReplyAsync(IDiscordInteraction interaction, string message,
         Func<IDiscordInteraction, string, Task>? sendInitialResponse = null)
     {
@@ -486,12 +440,8 @@ public static class InteractionErrors
 `DiscordLog.cs`
 
 ```csharp
-using Discord;
-using Microsoft.Extensions.Logging;
-
 namespace MyApp.Discord;
 
-/// <summary>Bridges Discord.Net's <see cref="LogMessage"/> to <see cref="ILogger"/> with real severity mapping.</summary>
 public static class DiscordLog
 {
     public static Task Write(ILogger logger, LogMessage message)
@@ -527,10 +477,6 @@ call an application service → build a card → respond.
 `GeneralModule.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using MyApp.Discord.Cards;
-
 namespace MyApp.Bot.Modules;
 
 // Usable everywhere: server installs, user installs, DMs and group DMs.
@@ -554,11 +500,6 @@ public sealed class GeneralModule : InteractionModuleBase<SocketInteractionConte
 `SearchModule.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using MyApp.Discord.Cards;
-using MyApp.Discord.Search;
-
 namespace MyApp.Bot.Modules;
 
 [CommandContextType(InteractionContextType.Guild, InteractionContextType.BotDm, InteractionContextType.PrivateChannel)]
@@ -594,19 +535,15 @@ public sealed class SearchModule(IDocsSearch search) : InteractionModuleBase<Soc
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var hits = await search.SearchAsync(query, timeout.Token);
+        // No V2 flag needed: this edits a message that already is V2, and Discord never removes that flag.
         await ModifyOriginalResponseAsync(m => m.Components = SearchCard.Build(query, hits, page));
     }
 }
 ```
 
-`FeedbackModule.cs`
+`FeedbackModule.cs` and `AnnouncementModule.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using MyApp.Discord.Cards;
-using MyApp.Discord.Modals;
-
 namespace MyApp.Bot.Modules;
 
 [CommandContextType(InteractionContextType.Guild, InteractionContextType.BotDm, InteractionContextType.PrivateChannel)]
@@ -618,39 +555,21 @@ public sealed class FeedbackModule(ILogger<FeedbackModule> logger) : Interaction
     public Task FeedbackAsync() => RespondWithModalAsync<FeedbackModal>(CustomIds.FeedbackModal);
 
     [ModalInteraction(CustomIds.FeedbackModal)]
-    public async Task SubmitAsync(FeedbackModal feedback)
+    public Task SubmitAsync(FeedbackModal feedback)
     {
-        // Store the body in your app (it's user content, possibly personal data) — log only metadata.
-        logger.LogInformation("Feedback from {UserId} ({Topic}, {Length} chars)",
-            Context.User.Id, string.Join(",", feedback.Topic), feedback.Body.Length);
-
-        await RespondAsync(components: FeedbackCard.Thanks(feedback), ephemeral: true,
-            allowedMentions: AllowedMentions.None); // echoing user input — never let it ping
+        // User content, possibly personal data: store it in your app, log only metadata.
+        logger.LogInformation("Feedback from {UserId} ({Length} chars)", Context.User.Id, feedback.Body.Length);
+        return RespondAsync(components: FeedbackCard.Thanks(feedback), ephemeral: true, allowedMentions: AllowedMentions.None);
     }
 }
-```
 
-`AnnouncementModule.cs`
-
-```csharp
-using Discord;
-using Discord.Interactions;
-using MyApp.Discord.Announcements;
-using MyApp.Discord.Cards;
-
-namespace MyApp.Bot.Modules;
-
-// Server-only, hidden from members without Manage Server (admins can override per role in Server Settings → Integrations).
 [CommandContextType(InteractionContextType.Guild)]
 [IntegrationType(ApplicationIntegrationType.GuildInstall)]
 public sealed class AnnouncementModule(IAnnouncementQueue queue) : InteractionModuleBase<SocketInteractionContext>
 {
     [SlashCommand("announce", "Post an announcement to the announcement channel")]
-    [DefaultMemberPermissions(GuildPermission.ManageGuild)]
-    public Task AnnounceAsync(
-        [MaxLength(200)] string title,
-        [MaxLength(2000)] string body,
-        [Summary(description: "Optional link for a 'Read more' button")] string? link = null)
+    [DefaultMemberPermissions(GuildPermission.ManageGuild)] // hidden from non-admins; admins can override per role
+    public Task AnnounceAsync([MaxLength(200)] string title, [MaxLength(2000)] string body, string? link = null)
     {
         // Link buttons need an http(s) URL — anything else is rejected by Discord when the card is posted.
         if (link is not null && !(Uri.TryCreate(link, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http"))
@@ -658,47 +577,31 @@ public sealed class AnnouncementModule(IAnnouncementQueue queue) : InteractionMo
             return RespondAsync("That link must be an absolute http(s) URL.", ephemeral: true);
         }
 
-        var accepted = queue.TryEnqueue(new Announcement(Guid.NewGuid(), title, body, LinkUrl: link));
+        var accepted = queue.TryEnqueue(new Announcement(Guid.NewGuid(), title, body, LinkUrl: link)); // never await Discord here
         return RespondAsync(accepted ? "Queued — it will appear in a moment." : "Too many announcements queued, try again shortly.",
             ephemeral: true);
     }
 
-    [ComponentInteraction(CustomIds.AnnouncementAckPattern)]
-    public Task AcknowledgeAsync(string announcementId) =>
-        RespondAsync("Thanks for reading! ✅", ephemeral: true);
+    [ComponentInteraction(CustomIds.AnnouncementAckPattern)] // "announce:ack:*" → string (wildcards don't bind Guid)
+    public Task AcknowledgeAsync(string announcementId) => RespondAsync("Thanks for reading! ✅", ephemeral: true);
 }
 ```
 
 The cards, modal, custom ids and autocomplete handler these use are in [rich-ui.md](rich-ui.md); the queue
 and publisher in [app-integration.md](app-integration.md).
 
-Precondition example (custom rule, reusable as an attribute; `IAccountLinks` is your app's service):
-
-`RequireLinkedAccountAttribute.cs`
+Custom precondition (reusable attribute; the error text is shown to the user; `IAccountLinks` is your service).
+Preconditions are cached singletons — resolve services from the `services` argument:
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using Microsoft.Extensions.DependencyInjection;
-
-namespace MyApp.Discord.Preconditions;
-
-public interface IAccountLinks
-{
-    Task<bool> IsLinkedAsync(ulong discordUserId, CancellationToken ct = default);
-}
-
-/// <summary>Custom precondition: usable on modules or methods; the error text is shown to the user.</summary>
+// excerpt
 public sealed class RequireLinkedAccountAttribute : PreconditionAttribute
 {
     public override async Task<PreconditionResult> CheckRequirementsAsync(
-        IInteractionContext context, ICommandInfo commandInfo, IServiceProvider services)
-    {
-        var accounts = services.GetRequiredService<IAccountLinks>();
-        return await accounts.IsLinkedAsync(context.User.Id)
+        IInteractionContext context, ICommandInfo commandInfo, IServiceProvider services) =>
+        await services.GetRequiredService<IAccountLinks>().IsLinkedAsync(context.User.Id)
             ? PreconditionResult.FromSuccess()
             : PreconditionResult.FromError("Link your account first with `/link`.");
-    }
 }
 ```
 
@@ -722,115 +625,38 @@ Renamed/obsolete: `[EnabledInDm]`, `[DefaultPermission]` (use the context/permis
 
 ## 7. Sharding & scaling notes
 
-`ShardedGatewayService.cs`
+Before 2,500 guilds per shard, switch to `DiscordShardedClient` (`TotalShards` null → Discord's recommended
+count; identifies respect `max_concurrency`) with `new InteractionService(shardedClient, …)`. A
+`ShardedGatewayService` is `DiscordGatewayService` with these differences:
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using Discord.WebSocket;
-using Microsoft.Extensions.Options;
-using MyApp.Discord;
-
-namespace MyApp.Bot;
-
-/// <summary>
-/// Variant for bots approaching 2,500 guilds per shard. Register instead of DiscordGatewayService, with
-/// <c>new DiscordShardedClient(config)</c> as the client and <c>new InteractionService(shardedClient, …)</c>.
-/// Differences: ShardReady fires per shard (register once), and contexts are ShardedInteractionContext.
-/// </summary>
-public sealed class ShardedGatewayService(
-    DiscordShardedClient client,
-    InteractionService interactions,
-    IServiceProvider services,
-    IOptions<DiscordOptions> options,
-    IHostApplicationLifetime lifetime,
-    ILogger<ShardedGatewayService> logger) : IHostedService
+// excerpt — ShardedGatewayService.cs: a copy of DiscordGatewayService with DiscordShardedClient injected instead
+// of DiscordSocketClient. Only the event wiring in StartAsync changes; the log bridge, AddModulesAsync,
+// login + GetApplicationInfoAsync, StopAsync and the private members (_commandsRegistered,
+// StopOnFatalDisconnectAsync, RegisterCommandsOnceAsync) are copied unchanged (omitted here).
+client.ShardReady += shard => // named on purpose: with "_ =>", "_ = Task.Run(...)" below assigns to the parameter
 {
-    private int _commandsRegistered;
-
-    public async Task StartAsync(CancellationToken cancellationToken)
-    {
-        client.Log += message => DiscordLog.Write(logger, message);
-        interactions.Log += message => DiscordLog.Write(logger, message);
-        client.ShardReady += shard =>
-        {
-            _ = Task.Run(() => RegisterCommandsOnceAsync(shard)); // off the gateway task
-            return Task.CompletedTask;
-        };
-        client.ShardDisconnected += StopOnFatalDisconnectAsync;
-        client.InteractionCreated += interaction =>
-            interactions.ExecuteCommandAsync(new ShardedInteractionContext(client, interaction), services);
-        interactions.InteractionExecuted += (command, context, result) =>
-            DiscordGatewayService.ReplyToFailureAsync(logger, command, context, result); // same error replies
-
-        await interactions.AddModulesAsync(typeof(ShardedGatewayService).Assembly, services);
-        await client.LoginAsync(TokenType.Bot, options.Value.Token).WaitAsync(cancellationToken);
-        // Real token check before identifying N shards.
-        await client.GetApplicationInfoAsync(new RequestOptions { CancelToken = cancellationToken });
-        await client.StartAsync(); // TotalShards null → Discord's recommended count; identifies respect max_concurrency
-    }
-
-    private Task StopOnFatalDisconnectAsync(Exception exception, DiscordSocketClient shard)
-    {
-        if (DiscordGatewayService.IsFatal(exception)) // same fatal close codes as the single-connection service
-        {
-            logger.LogCritical(exception, "Shard {ShardId} disconnected with a non-recoverable error — stopping the host", shard.ShardId);
-            Environment.ExitCode = 2;
-            lifetime.StopApplication();
-        }
-
-        return Task.CompletedTask;
-    }
-
-    public async Task StopAsync(CancellationToken cancellationToken)
-    {
-        await client.StopAsync();
-        await client.LogoutAsync();
-    }
-
-    private async Task RegisterCommandsOnceAsync(DiscordSocketClient shard)
-    {
-        if (Interlocked.Exchange(ref _commandsRegistered, 1) == 1)
-        {
-            return; // ShardReady fires for every shard — register once
-        }
-
-        try
-        {
-            // sharded = production-sized: register globally (DevGuildId is for the single-shard dev setup above)
-            await interactions.RegisterCommandsGloballyAsync();
-        }
-        catch (Exception ex)
-        {
-            Interlocked.Exchange(ref _commandsRegistered, 0);
-            logger.LogError(ex, "Registering application commands failed (shard {ShardId})", shard.ShardId);
-        }
-    }
-}
+    _ = Task.Run(RegisterCommandsOnceAsync); // fires once per shard; the Interlocked guard registers once per process
+    return Task.CompletedTask;
+};
+client.ShardDisconnected += (exception, _) => StopOnFatalDisconnectAsync(exception); // same IsFatal check
+client.InteractionCreated += interaction =>
+    interactions.ExecuteCommandAsync(new ShardedInteractionContext(client, interaction), services);
+interactions.InteractionExecuted += (command, context, result) =>
+    InteractionErrors.HandleExecutedAsync(logger, command, context, result); // same error replies
 ```
 
-
-- One process per token unless sharded: two instances with the same token both receive every event and both
-  answer interactions (the second fails with "already acknowledged").
-- Before 2,500 guilds per shard: switch to the sharded variant above (`TotalShards` or Discord's
-  recommendation). DMs and entitlement events arrive on shard 0 only.
+- Still one sharded client per token (SKILL.md "Choose the connection"). DMs and entitlement events arrive on
+  shard 0 only.
 - Need horizontal scale for interaction handling only? HTTP interactions scale like any web app.
 - `AlwaysDownloadUsers = true` requires `GuildMembers` and costs startup time and memory — fetch members on
   demand (`GetUserAsync`) instead.
 
 ## 8. Production checklist
 
-- [ ] Intents minimal; privileged intents justified and enabled in the portal
-- [ ] Token from secret store; startup fails on a bad token; host stops on fatal disconnect; restarts back off
+SKILL.md core rules 1–15 and "Stack fit" are the checklist; additionally:
 - [ ] DM / user-install contexts verified on a separate dev application with global registration
-- [ ] Commands: contexts + integration types declared; admin commands gated; guild registration only in dev
-- [ ] Every slow command defers; every failure answered ephemerally; logs carry interaction id + command name
-- [ ] Custom ids centralised, ≤ 100 chars, handlers stateless
-- [ ] `AllowedMentions.None` on app/user content
-- [ ] Exactly one process per token (or sharded) for the gateway worker
-- [ ] `/health/live` dependency-free (a Discord outage must not restart the bot — restarts re-identify);
-      `client.ConnectionState` only on `/health/ready` or as a metric. A Worker-SDK bot has no HTTP endpoint:
-      rely on the exit code + the orchestrator's restart policy with backoff
-- [ ] Container image keeps ICU (no invariant globalization); not AOT-published
+- [ ] Logs carry interaction id + command name; alerts on `Critical` and gateway-blocking warnings
+- [ ] A Worker-SDK bot has no HTTP endpoint: rely on the exit code + the orchestrator's restart policy with backoff
 - [ ] `docs/` updated in the same change: portal setup, intents and why, command list, which transport and why
-      (an ADR via `/noobit:adr` for the gateway-vs-HTTP decision)
+      (an ADR via `/noobit:new-adr` for the gateway-vs-HTTP decision)

@@ -1,6 +1,6 @@
 # FusionCache + Redis — Best Practices Reference
 
-Verified against official documentation, July 2026; versions verified October 2026. Primary sources: the FusionCache docs
+Verified against official documentation and nuget.org, October 2026. Primary sources: the FusionCache docs
 (https://github.com/ZiggyCreatures/FusionCache/blob/main/docs/README.md), Redis docs
 (https://redis.io/docs/latest/), and the StackExchange.Redis docs
 (https://stackexchange.github.io/StackExchange.Redis/). Full URL list at the bottom.
@@ -14,17 +14,11 @@ This file extends `SKILL.md` — read that first for the standard wiring and usa
 | StackExchange.Redis | **3.x** (3.3.1 on 2026-09-22; current patch: check nuget.org) | 3.0.0 shipped 2026-06-12; 2.13.x was the prior stable line. Check the 3.0 release notes before upgrading a 2.x app. |
 | Redis Open Source | **8.10** (8.10.2 on 2026-09-17; current patch: check github.com/redis/redis/releases) | 8.x line; patches ship for several 8.x minors in parallel. 8.6 added the LRM (least-recently-modified) eviction policies. |
 
-Notable in FusionCache 2.5/2.6: optional **distributed-level stampede protection** via
-`IFusionCacheDistributedLocker` (see below), `MemoryCacheDuration` entry option as a
-cache-coherence mitigation when no backplane exists, configurable cleanup behavior for
-`RemoveByTag()`, and a built-in Best Practices Advisor that flags configuration issues.
-
-Notable in 2.7–2.9 (use **≥ 2.9.0**): builder extensions `WithRedisDistributedLocker()` (2.8)
-next to `WithStackExchangeRedisBackplane()`; fixes for distributed locks not being released
-(`SkipDistributedCacheWrite` in 2.8, failed L1 write in 2.9) and for an expired tag marker being
-re-materialized with a newer timestamp, which acted like a spurious `RemoveByTag()` (2.8); eager
-refresh now checks L2 before running the factory (2.9); the Advisor warns when the System.Text.Json
-serializer cannot round-trip value tuples (2.7) — cache records, not tuples.
+Use **≥ 2.9.0**: the 2.5–2.9 releases added the distributed locker (`WithRedisDistributedLocker()`,
+below), `MemoryCacheDuration`, configurable `RemoveByTag()` cleanup and the Best Practices Advisor, and
+fixed lock-release and tag-barrier edge cases; 2.9 checks L2 before an eager refresh runs the factory.
+Details: the FusionCache release notes. Cache records, not value tuples (the System.Text.Json
+serializer can't round-trip them; the Advisor warns).
 
 ## Established patterns
 
@@ -53,9 +47,21 @@ possible + no blocking + complete protection from cache stampede". Verified sema
 Two fail-safe refinements worth using:
 
 ```csharp
-public sealed class ExchangeRateService(IFusionCache cache, IRatesApi api)
+// one service/API pair is used throughout this file (also in the tests below)
+public interface IRatesApi
 {
-    public async Task<RateDto> GetRateAsync(string pair, CancellationToken ct) =>
+    Task<RateDto> GetRateAsync(string pair, CancellationToken ct);                // throws on failure
+    Task<Result<RateDto>> TryGetRateAsync(string pair, CancellationToken ct);     // your Result type, no throw
+}
+
+public sealed class RateService(IFusionCache cache, IRatesApi api)
+{
+    public async Task<RateDto> GetAsync(string pair, CancellationToken ct) =>   // exceptions trigger fail-safe
+        await cache.GetOrSetAsync<RateDto>(
+            CacheKeys.Rate(pair), (_, token) => api.GetRateAsync(pair, token), token: ct);
+
+    // Result-style variant: fail without throwing
+    public async Task<RateDto> GetWithFallbackAsync(string pair, CancellationToken ct) =>
         await cache.GetOrSetAsync<RateDto>(
             CacheKeys.Rate(pair),
             async (ctx, token) =>

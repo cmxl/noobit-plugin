@@ -13,7 +13,7 @@ Two test projects per service:
 - `*.Tests` — unit: domain logic, handlers with substituted ports, no I/O, milliseconds.
 - `*.IntegrationTests` — WebApplicationFactory + Testcontainers: real HTTP, real DB, real Redis/Rabbit.
 
-Scope: this skill covers the **.NET** side only. Angular tests (Vitest for components/stores, Playwright e2e against the docker-compose stack) follow the `angular-developer` skill.
+Scope: this skill covers the **.NET** side only. Angular/frontend tests (Vitest for components/stores, Playwright e2e through the cookie BFF) live in `noobit:frontend-testing`.
 
 ## What "covered" means
 
@@ -56,7 +56,11 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
 
     protected override void ConfigureWebHost(IWebHostBuilder builder) =>
         builder.UseSetting("ConnectionStrings:Default", _db.GetConnectionString())
-               .UseSetting("ConnectionStrings:Redis", _redis.GetConnectionString());
+               .UseSetting("ConnectionStrings:Redis", _redis.GetConnectionString())
+               // TestServer = one remote IP, TestAuthHandler = one user → the whole suite shares one rate-limit
+               // partition. Raise both limits here; one dedicated test keeps production values (reference).
+               .UseSetting("RateLimiting:Global:PermitLimit", "100000")
+               .UseSetting("RateLimiting:Auth:PermitLimit", "100000");
 
     public async Task ResetAsync()
     {
@@ -79,6 +83,7 @@ public sealed class ApiCollection : ICollectionFixture<ApiFixture>;
 
 ```csharp
 [Collection(nameof(ApiCollection))]
+[Trait("Category", "Integration")]   // class-level trait — lets the quick loop exclude it
 public sealed class CreateOrderTests(ApiFixture api) : IAsyncLifetime
 {
     public async ValueTask InitializeAsync() => await api.ResetAsync();
@@ -88,7 +93,7 @@ public sealed class CreateOrderTests(ApiFixture api) : IAsyncLifetime
     public async Task Post_valid_order_returns_201_and_persists()
     {
         var ct = TestContext.Current.CancellationToken;
-        var client = await api.CreateAuthenticatedClientAsync(ct); // signed-in test user + X-XSRF-TOKEN (bff-security checklist)
+        var client = await api.CreateAuthenticatedClientAsync(ct); // https base address + test user + X-XSRF-TOKEN
         var response = await client.PostAsJsonAsync("/api/orders", new { productId = 1, qty = 2 }, ct);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
@@ -101,7 +106,7 @@ public sealed class CreateOrderTests(ApiFixture api) : IAsyncLifetime
 
 MSSQL works the same way — `MsSqlBuilder("mcr.microsoft.com/mssql/server:2025-latest")`, `SqlConnection`, `DbAdapter.SqlServer` (sample in the reference).
 
-Auth in integration tests: a test authentication handler (`AddAuthentication("Test").AddScheme<...>`) injecting a claims principal — don't bypass authorization by removing it. Auth/CSRF test cases (tokenless POST → 400, `/api` → 401 not 302, token re-issue after login, …): checklist in `bff-security` → references/best-practices.md.
+Auth in integration tests: a test authentication handler (`AddAuthentication("Test").AddScheme<...>`) injecting a claims principal — don't bypass authorization by removing it. **Clients for a cookie BFF use `BaseAddress = new Uri("https://localhost")`** (+ `AllowAutoRedirect = false`): the default `http://localhost` never resends the `Secure` BFF cookies (`__Host-af`, `XSRF-TOKEN`, `__Host-session`), so every write fails antiforgery with 400 — `CreateAuthenticatedClientAsync` in the reference. Auth/CSRF test cases (tokenless POST → 400, `/api` → 401 not 302, token re-issue after login, …): checklist in `bff-security` → references/best-practices.md. **Rate limits:** the fixture raises `RateLimiting:Global:PermitLimit` / `RateLimiting:Auth:PermitLimit` (all TestServer requests share one IP and one test user, so a growing suite would 429); exactly one test restores production values on a derived factory and asserts the 429 — sample in the reference.
 
 Published messages: run a real broker (`Testcontainers.RabbitMq`), bind a server-named probe queue to the exchange **before** the act, then poll `BasicGetAsync` against a deadline — pattern in the reference; topology/outbox design lives in `rabbitmq-messaging`.
 
@@ -111,14 +116,14 @@ Published messages: run a real broker (`Testcontainers.RabbitMq`), bind a server
 - One logical assertion block per test; `[Theory]`+`[InlineData]` for input matrices.
 - No `Thread.Sleep`/arbitrary delays — poll with timeout or await the actual signal (flaky tests are bugs; see superpowers:systematic-debugging).
 - Pass `TestContext.Current.CancellationToken` (xUnit v3) to every async call — HTTP, `ReadFromJsonAsync`, DB, `StartAsync` (analyzer xUnit1051 flags misses).
-- Time: inject `TimeProvider`, use `FakeTimeProvider` (`Microsoft.Extensions.TimeProvider.Testing`).
+- Time: inject `TimeProvider` (register `builder.Services.AddSingleton(TimeProvider.System)` — the framework doesn't), and swap in `FakeTimeProvider` (`Microsoft.Extensions.TimeProvider.Testing`) in tests.
 - Unit tests shouldn't need a DB at all; integration tests use the production engine via Testcontainers (see Overview).
 
 ## Running
 
 ```
 dotnet test                                                # everything under the current dir
-dotnet test --filter-not-trait "Category=Integration"      # quick loop
+dotnet test --filter-not-trait "Category=Integration"      # quick loop (needs [Trait("Category", "Integration")] on integration classes)
 dotnet test --project tests/Orders.Tests                   # one project (--solution X.slnx for a solution)
 dotnet test --coverage --coverage-output-format cobertura  # needs Microsoft.Testing.Extensions.CodeCoverage
 ```
@@ -158,7 +163,7 @@ Testcontainers rules (per the official best-practices doc):
 | Respawner created before migrations ran | Migrate in the fixture's `InitializeAsync`, then `Respawner.CreateAsync`; ignore `__EFMigrationsHistory` |
 | Asserting internal calls (`Received()`) as the main assertion | Assert outputs and state; `Received()` only for ports with no observable outcome (e.g. published message) |
 | Test order dependence | `ResetAsync()` in InitializeAsync; no static state |
-| `[assembly: CollectionBehavior(DisableTestParallelization/MaxParallelThreads …)]` | Compile error since xUnit 4.0 — `[assembly: Parallelization(Mode = …, MaxThreads = …)]` |
+| `[assembly: CollectionBehavior(DisableTestParallelization/MaxParallelThreads …)]` | Compile error since the `xunit.v3` package 4.x — `[assembly: Parallelization(Mode = …, MaxThreads = …)]` |
 | Skipping tests to "go fast" | Coverage is the definition of done here |
 
 ## Official docs — verify, don't guess

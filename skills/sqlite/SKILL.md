@@ -33,6 +33,8 @@ SELECT 'only_in_new' AS side, * FROM (SELECT * FROM (<new query>) EXCEPT SELECT 
 -- must return 0 rows
 ```
 
+   `EXCEPT` compares by value across storage classes (`SELECT 1 EXCEPT SELECT 1.0` → 0 rows), so a rewrite that turns integers into reals still passes — also compare `typeof(col)` per column (add `typeof(x) AS x_type` to both sides) when types matter.
+
    If no unique key exists in the result, group both sides by all columns with `COUNT(*)` and compare the grouped sets instead — duplicates differ invisibly under plain `EXCEPT`.
 4. **Row order**: `EXCEPT` never compares order. If the query has `ORDER BY` (pagination, top-N, ordered output the caller relies on), compare the ordered key sequences separately — read both in the app layer and compare position by position.
 5. **Hashing large sets**: the library has no hash aggregate. The **CLI** ships `sha3_query()` (behind `.sha3sum`), which hashes results with type tags in returned order — but it also hashes the **SQL text**, so give both runs identical text: `CREATE TEMP TABLE cmp AS <old query>;` → `SELECT sha3_query('SELECT * FROM cmp ORDER BY <unique key>');` → drop, repeat with `<new query>`, compare hashes. Without the CLI, hash ordered rows in the app layer. `total()`/`sum()` per numeric column is a cheap first-pass signal only.

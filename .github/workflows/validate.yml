@@ -1,0 +1,61 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      - name: Lint frontmatter, references, hooks and evals
+        run: |
+          npm ci --prefix tools
+          node tools/lint-plugin.mjs
+
+      - name: Validate marketplace and plugin manifests
+        run: |
+          npx -y @anthropic-ai/claude-code@2.1.288 plugin validate --strict .
+          npx -y @anthropic-ai/claude-code@2.1.288 plugin validate --strict .claude-plugin/plugin.json
+
+  scripts:
+    # Windows is the hooks' main platform (cmd.exe, junctions, case-insensitive paths);
+    # Linux catches flock/case-sensitivity differences
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5   # the Prettier hook tests run a fake prettier via node
+        with:
+          node-version: 24
+
+      - name: PSScriptAnalyzer and Pester
+        shell: pwsh
+        run: |
+          Install-Module Pester -RequiredVersion 6.2.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 6.2.0
+          $issues = @('hooks', 'skills', 'tests', 'setup' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 })
+          $issues | Format-Table RuleName, Line, ScriptName, Message -AutoSize -Wrap
+          if ($issues.Count) { throw "PSScriptAnalyzer: $($issues.Count) finding(s)" }
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config

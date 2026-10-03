@@ -1,6 +1,6 @@
 ---
 name: rfc
-description: Use when a significant feature, system, or migration needs an up-front design document before code — weighing options, defining goals and non-goals, proposing architecture/data-model/API, and planning migration, rollout, and risks; when someone says "let's write an RFC / design doc / proposal", or a decision is too big or too expensive-to-reverse to just record as an ADR. For a durable, reviewed design of a cross-team or expensive-to-reverse change — not a per-feature implementation design from brainstorming (that stays in work/specs/). Not for a decision already settled (use noobit:adr).
+description: Use when a significant feature, system, or migration needs an up-front design document before code — weighing options, goals and non-goals, proposing architecture/data-model/API, planning migration, rollout, and risks; when someone says "let's write an RFC / design doc / proposal", or a decision is too expensive-to-reverse to just record as an ADR. Not for per-feature implementation designs from brainstorming (those stay in work/specs/) or an already-settled decision (noobit:adr).
 ---
 
 # Request for Comments (design document)
@@ -91,8 +91,17 @@ with the new RFC linking back in its Background) — plus Decision links to ADRs
 
 ## The index (`docs/rfc/index.md`)
 
-A **generated** table of contents, created if absent and rewritten wholesale on every add or status change
-— never hand-edited.
+A **generated** table of contents, created if absent and regenerated on every add or status change by the
+bundled script — never hand-edited, never rebuilt by hand:
+
+```bash
+pwsh -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/regen-index.ps1" -Path docs/rfc
+```
+
+`${CLAUDE_SKILL_DIR}` is this skill's base directory (shown as "Base directory for this skill" when it
+loads); if it appears unexpanded, substitute that path. The script (PowerShell 7, no modules) applies the
+rules below deterministically, rewrites only the block between the markers, and warns about RFCs without
+an H1 or a recognizable Status line — fix the file, then rerun.
 
 ```markdown
 # RFCs
@@ -104,9 +113,11 @@ A **generated** table of contents, created if absent and rewritten wholesale on 
 <!-- END GENERATED -->
 ```
 
-Rules: **newest date first**; one row per **date-named** RFC file (`YYYY-MM-DD-*.md`) — ignore `index.md`,
+Rules: **newest date first**, ties by title A→Z (ordinal, case-insensitive — culture-independent); one row per
+**date-named** RFC file (`YYYY-MM-DD-*.md` with a real date — others are skipped with a warning) — ignore `index.md`,
 `README.md`, and any **numbered legacy RFCs** (e.g. `RFC-001-*.md`); Date + Status come from the filename
-prefix and Status line; the **RFC** cell is the H1 title, verbatim; links are relative. Pre-existing
+prefix and Status line (`Superseded` rows keep the `by [title](file.md)` link); the **RFC** cell is the H1
+title, verbatim except that `[`, `]` and `|` are backslash-escaped so the link and table stay intact (likewise a `Superseded` row's `by [title](file.md)` link text); links are relative. Pre-existing
 numbered RFCs keep their own `README.md` index and are left untouched — this skill owns only `index.md` and
 the date-named RFCs it creates; when a legacy `docs/rfc/README.md` exists, `index.md` links it once. `docs/README.md` links `rfc/index.md` once, never the individual RFCs.
 
@@ -125,7 +136,8 @@ Authoring **and** evaluation are the job of the **`noobit:tech-lead`** agent.
      (common case served, edge cases as documented workarounds?), one-year hindsight (what would you
      regret?): make the alternatives and their trade-offs real, fill the Cross-cutting subsection, plan
      migration & rollout so it ships without a freeze, and name risks with mitigations. List **honest Open questions** — do not paper over the undecided.
-  5. **Write** `docs/rfc/YYYY-MM-DD-kebab-title.md`, **regenerate** `docs/rfc/index.md`, and ensure
+  5. **Write** `docs/rfc/YYYY-MM-DD-kebab-title.md`, **regenerate** `docs/rfc/index.md` with
+     `scripts/regen-index.ps1` (see The index; rerun after every later status change), and ensure
      `docs/README.md` links `rfc/index.md` (add it once if missing).
   6. **On acceptance** — only when the caller states a human accepted it: set `Status` to `Accepted`,
      resolve Open questions, fill `Decision`, and **author the

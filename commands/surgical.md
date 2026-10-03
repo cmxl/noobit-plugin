@@ -1,9 +1,9 @@
 ---
 description: Disciplined, gated bugfix/change workflow — research, reproduce, plan gate, minimal fix, full verification
-argument-hint: <bug/change description> | <ticket reference>
+argument-hint: "<bug/change description> | <ticket reference>"
 ---
 
-# /surgical
+# /noobit:surgical
 
 You are executing the **surgical** workflow: a gated pipeline for diagnosing and resolving bugs *and* implementing changes with the smallest correct change, fully verified. The task is in `$ARGUMENTS`.
 
@@ -28,7 +28,7 @@ Run in order; announce each phase with a one-line header. Phases marked *(condit
 4. Output a 3–4 line triage summary (task type, layer, repos in play, which conditional phases will run).
 
 ### Phase 1 — Research (skills-first → docs-confirm)
-Load the noobit skills matching the classified layer (`aspnet-backend`, `data-access` + provider skill, `fusioncache-redis`, `rabbitmq-messaging`, `bff-security`, `docker`, `nginx-deploy`, `angular-ngrx-state`; the external Angular skills if installed). WebFetch their official-docs links where behavior is version-sensitive. Output a short best-practice brief with sources that constrains the fix. *(Trim to a sanity check for trivial mechanical edits.)*
+Load the noobit skills matching the classified layer (`aspnet-backend`, `data-access` + provider skill, `fusioncache-redis`, `rabbitmq-messaging`, `bff-security`, `docker`, `nginx-deploy`, `ci-pipelines`, `angular-ngrx-state`, `frontend-testing`, `dotnet-testing`, and `paypal` / `discord` when the bug touches those integrations; the external Angular skills if installed). WebFetch their official-docs links where behavior is version-sensitive. Output a short best-practice brief with sources that constrains the fix. *(Trim to a sanity check for trivial mechanical edits.)*
 
 ### Phase 2 — Investigate & Reproduce
 1. Drive **superpowers:systematic-debugging** — root cause, not nearest symptom. Use the `Explore` agent for broad fan-out searches.
@@ -45,12 +45,12 @@ If an important-decision trigger is unresolved, ask first, then present. No code
 ### Phase 3 — Implement (only after approval)
 1. Apply the smallest change following existing patterns; TDD per **superpowers:test-driven-development** where a failing test can lead.
 2. Add the **regression test** pinning the fixed behavior — it must fail before the fix and pass after.
-3. Seam fixes: coordinated edits on **both** sides, each repo on its own branch per the project's git conventions; the contract change is the pivot — keep API and client in lockstep.
+3. Seam fixes: coordinated edits on **both** sides, each repo on its own branch per the project's git conventions; the contract change is the pivot — keep API and client in lockstep. The noobit Stop gate only tracks the session's own repo — run the build/test/review gates (`/noobit:ship`) in the counterpart repo too.
 4. Re-ask only if a *new* important-decision trigger appears.
 
 ### Phase 4 — Verify (never skipped)
 1. **Reproduce-then-confirm-gone** — the previously-failing repro no longer fires. Seam fixes: verify the client against the updated contract end-to-end.
-2. **Build + tests green** on every affected repo (`dotnet build`/`dotnet test`, `npm run build`/`npx vitest run`) — start Docker for integration tests per `dotnet-testing` if needed.
+2. **Build + tests green** on every affected repo (`dotnet build`/`dotnet test`, `npm run build`/`npx ng test --no-watch`) — start Docker for integration tests per `dotnet-testing` if needed.
 3. **Regression guard** — the new test is present and passing.
 4. **Review clean** — dispatch the `stack-reviewer` agent on the diff; fix BLOCKER/MAJOR findings.
 5. **Docs in sync** — if behavior, endpoints, config, or architecture changed, run the docs-sync flow (`docs-maintainer`).
@@ -67,7 +67,7 @@ Root cause · change summary per repo · verification evidence (the checklist wi
 
 ## Examples
 ```
-/surgical stale prices served after cache invalidation on plan change
-/surgical #4711
-/surgical the client gets a 500 opening order details since the last deploy
+/noobit:surgical stale prices served after cache invalidation on plan change
+/noobit:surgical #4711
+/noobit:surgical the client gets a 500 opening order details since the last deploy
 ```

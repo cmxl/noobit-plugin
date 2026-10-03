@@ -40,13 +40,22 @@ between approval and capture — see [webhooks.md](webhooks.md) and [orders-paym
 ## v6 client
 
 ```html
-<!-- sandbox: https://www.sandbox.paypal.com/web-sdk/v6/core -->
-<script async src="https://www.paypal.com/web-sdk/v6/core" onload="onPayPalWebSdkLoaded()"></script>
-
 <paypal-button hidden></paypal-button>
 ```
 
+Load the SDK from your own script (in Angular: a service/component in the bundle), never with an inline
+`onload="…"` attribute — a hash- or `'strict-dynamic'`-based CSP (bff-security's Policy A) blocks inline
+handlers. A script element created by already-trusted code is allowed by `'strict-dynamic'`, and so are the
+scripts the SDK injects in turn:
+
 ```javascript
+const script = document.createElement("script");
+script.src = "https://www.paypal.com/web-sdk/v6/core";          // sandbox: https://www.sandbox.paypal.com/web-sdk/v6/core
+script.async = true;
+script.addEventListener("load", () => onPayPalWebSdkLoaded());
+script.addEventListener("error", () => { /* keep the button hidden, offer another way to pay */ });
+document.head.append(script);
+
 async function onPayPalWebSdkLoaded() {
   const { clientId } = await getJson("/api/paypal/client-id");   // public value, per environment
   const sdk = await window.paypal.createInstance({
@@ -108,7 +117,7 @@ async function getJson(url) {
   the page text and the official sample use `clientId`.
 - **Environment** is decided by the script host (`www.sandbox.paypal.com` vs `www.paypal.com`) or the
   loader's `environment` option — not by the client id. Serve the sandbox script with sandbox credentials only.
-- Run initialization from the script's `onload` (not an inline script / `DOMContentLoaded`).
+- Run initialization from the script's `load` event (`addEventListener("load", …)` in your own script — not an inline `onload=` attribute, inline script or `DOMContentLoaded`).
 - Buttons: `<paypal-button>`, `<paypal-pay-later-button>`, `<paypal-credit-button>` — reveal each only
   when `isEligible("paypal" | "paylater" | "credit")`.
 - `presentationMode`: `auto` (recommended: popup, modal fallback), `popup`, `modal` (WebViews), `redirect`
@@ -131,7 +140,9 @@ import { Injectable, inject } from "@angular/core";
 import { loadCoreSdkScript, type OneTimePaymentSession } from "@paypal/paypal-js/sdk-v6";
 import { firstValueFrom } from "rxjs";
 
-export type CaptureResult = { status: string };   // whatever your capture endpoint returns
+export type CaptureResult = {                        // the capture endpoint's statuses
+  status: "COMPLETED" | "PENDING" | "DECLINED" | "INSTRUMENT_DECLINED" | "ORDER_NOT_APPROVED" | "IN_PROGRESS";
+};
 type ClientConfig = { clientId: string; environment: "sandbox" | "production" };
 
 @Injectable({ providedIn: "root" })
@@ -222,7 +233,7 @@ paypal.MapGet("/client-id", (IOptions<PayPalOptions> o) => Results.Ok(
     new ClientIdResponse(o.Value.ClientId, o.Value.Environment == "live" ? "production" : "sandbox")));
 
 paypal.MapPost("/orders", async (CreatePayPalOrderRequest req, ICheckoutService checkouts, IPayPalClient client,
-                                 IPayPalOrderStore store, CancellationToken ct) =>
+                                 IPayPalOrderStore store, IOptions<PayPalOptions> options, CancellationToken ct) =>
 {
     // a FROZEN checkout snapshot (lines + prices fixed), owned by the caller — not a cart that can still change
     var checkout = await checkouts.GetOpenForCurrentUserAsync(req.CheckoutId, ct);
@@ -237,15 +248,19 @@ paypal.MapPost("/orders", async (CreatePayPalOrderRequest req, ICheckoutService 
             Amount: new Money(checkout.Currency, amount.ToString(CultureInfo.InvariantCulture)))]),
         requestId: $"create:{checkout.Id}", ct);                            // PayPal-Request-Id
 
-    // idempotent upsert: a retried create returns the same order id
-    await store.UpsertAsync(order.Id, checkout.Id, checkout.TenantId, amount, checkout.Currency, ct);
+    // idempotent upsert keyed on (environment, order id); payee = the merchant id booking checks against
+    var o = options.Value;
+    await store.UpsertAsync(new PayPalOrderMapping(o.Environment, order.Id, checkout.TenantId, checkout.Id.ToString(),
+                                                   amount, checkout.Currency, PayeeMerchantId: o.MerchantId), ct);
     return Results.Ok(new CreateOrderResponse(order.Id));
 });
 
 paypal.MapPost("/orders/{orderId}/capture", async (string orderId, IPayPalOrderStore store, IPayPalClient client,
-                                                   IPaymentBooking booking, CancellationToken ct) =>
+                                                   IPaymentBooking booking, IOptions<PayPalOptions> options,
+                                                   CancellationToken ct) =>
 {
-    var mapping = await store.FindForCurrentUserAsync(orderId, ct);         // reject foreign/unknown order ids
+    // keyed on (environment, order id) like the table; rejects foreign/unknown order ids
+    var mapping = await store.FindForCurrentUserAsync(options.Value.Environment, orderId, ct);
     if (mapping is null) return Results.NotFound();
 
     PayPalOrder order;
@@ -256,6 +271,17 @@ paypal.MapPost("/orders/{orderId}/capture", async (string orderId, IPayPalOrderS
     catch (PayPalApiException ex) when (ex.HasIssue("ORDER_ALREADY_CAPTURED"))
     {
         order = await client.GetOrderAsync(orderId, ct);                    // webhook path won the race
+    }
+    // 422: the funding source was declined, or the buyer never approved → the buyer picks another way to pay
+    catch (PayPalApiException ex) when (ex.HasIssue("INSTRUMENT_DECLINED") || ex.HasIssue("ORDER_NOT_APPROVED"))
+    {
+        return Results.Ok(new CaptureResponse(
+            ex.HasIssue("INSTRUMENT_DECLINED") ? "INSTRUMENT_DECLINED" : "ORDER_NOT_APPROVED"));
+    }
+    // 409: an earlier capture call for this order is still running — retry later with the SAME request id
+    catch (PayPalApiException ex) when (ex.HasIssue("PREVIOUS_REQUEST_IN_PROGRESS"))
+    {
+        return Results.Ok(new CaptureResponse("IN_PROGRESS"));
     }
     var outcome = await booking.BookAsync(mapping, order, ct);               // same forward-only routine as the webhook processor
     return Results.Ok(new CaptureResponse(outcome.Status));                  // COMPLETED / PENDING / DECLINED → UI message
@@ -269,6 +295,30 @@ static decimal RoundForPayPal(decimal value, string currency)
     var rounded = decimal.Round(value, digits, MidpointRounding.AwayFromZero);
     return digits == 0 ? decimal.Truncate(rounded) : rounded + 0.00m;
 }
+
+// one row of dbo.paypal_order (inbox-table.md); the webhook processor reads it with the same (environment, id) key
+public sealed record PayPalOrderMapping(string Environment, string PayPalOrderId, int TenantId, string CheckoutRef,
+                                        decimal ExpectedAmount, string Currency, string PayeeMerchantId);
+
+public interface IPayPalOrderStore
+{
+    Task UpsertAsync(PayPalOrderMapping mapping, CancellationToken ct);   // same (environment, id) again → no-op
+    Task<PayPalOrderMapping?> FindForCurrentUserAsync(string environment, string payPalOrderId, CancellationToken ct);
+}
+
+// endpoint DTOs — web defaults serialize camelCase: { clientId, environment }, { id }, { status }
+public sealed record ClientIdResponse(string ClientId, string Environment);
+public sealed record CreatePayPalOrderRequest(Guid CheckoutId);
+public sealed record CreateOrderResponse(string Id);                        // the clients read data.id
+public sealed record CaptureResponse(string Status);
+
+// add them to the app's source-generated context (noobit:aspnet-backend → System.Text.Json source generation),
+// registered via ConfigureHttpJsonOptions — reflection-free minimal-API bodies
+[JsonSerializable(typeof(ClientIdResponse))]
+[JsonSerializable(typeof(CreatePayPalOrderRequest))]
+[JsonSerializable(typeof(CreateOrderResponse))]
+[JsonSerializable(typeof(CaptureResponse))]
+internal sealed partial class AppJsonContext : JsonSerializerContext;
 ```
 
 `IPayPalClient`, `PayPalApiException` and the request/response records (`CreateOrderBody`,
@@ -279,12 +329,19 @@ so the code works with reflection-free JSON.
 - The browser sends **only** a checkout id; the server prices it. The official samples do the same
   (SKU + quantity in, server-side catalogue prices). Freeze the checkout before creating the order —
   otherwise a buyer can pay the old total and then change the cart.
-- The order mapping stores the **expected amount and currency**; booking compares the captured amount
+- The order mapping stores the **expected amount, currency and payee merchant id** (`PayPal:MerchantId`); booking compares the capture
   against it before marking anything paid (see [inbox-table.md](inbox-table.md)).
 - These endpoints are called from your own page by a signed-in or session-bound user: keep your normal
   auth and antiforgery/CSRF protection on them (unlike the anonymous webhook endpoint).
-- Check the capture result: `COMPLETED` = paid; `PENDING` = not yet paid (tell the buyer, wait for
-  the webhook); declined/`INSTRUMENT_DECLINED` = let the buyer choose another payment method.
+- Check the capture result (every handled outcome is a `200` with a `status`, so `postJson` / `HttpClient`
+  don't throw for them): `COMPLETED` = paid; `PENDING` = not yet paid (tell the buyer, wait for the webhook);
+  `DECLINED`, `INSTRUMENT_DECLINED` (PayPal 422) or `ORDER_NOT_APPROVED` (PayPal 422) = let the buyer choose
+  another payment method — v5: `return actions.restart()` in `onApprove`
+  ([handle funding failures](https://developer.paypal.com/v5/checkout/handle-funding-failure)); v6: show the
+  button again, the next click starts a new session; `IN_PROGRESS` (PayPal 409
+  `PREVIOUS_REQUEST_IN_PROGRESS`) = an earlier capture is still running — retry the capture POST after a few
+  seconds (same `PayPal-Request-Id`, so it can't capture twice), then show "processing" and let the webhook
+  finish it.
 - Never return the raw PayPal response to the browser — map it to what the UI needs.
 - Zero-decimal currencies: check PayPal's currency-codes list (https://developer.paypal.com/api/rest/reference/currency-codes/)
   for every currency you accept; the three above are the zero-decimal ones PayPal lists today.
@@ -311,16 +368,46 @@ so the code works with reflection-free JSON.
 
 ## Content-Security-Policy
 
-PayPal's CSP page (written for v5; no separate v6 page yet) lists:
+PayPal's CSP page (written for v5; no separate v6 page yet) allows `*.paypal.com *.paypalobjects.com
+*.venmo.com` in `script-src`, `connect-src`, `frame-src`/`child-src` and `img-src` (+ `data:`). How that maps
+onto bff-security's policies:
 
-| Directive | Allow |
-|---|---|
-| `script-src`, `style-src` | `*.paypal.com *.paypalobjects.com *.venmo.com` + a nonce |
-| `connect-src`, `frame-src`, `child-src` | `*.paypal.com *.paypalobjects.com *.venmo.com` |
-| `img-src` | same + `data:` |
+- **Policy A (default — Angular `autoCsp` `<meta>` owns `script-src`).** Add PayPal only to the **response
+  header**, and only the non-script directives — the header must never carry `script-src`/`default-src`
+  (two policies are both enforced, so a host-list `script-src` in the header would block the bundle's
+  hashed scripts). The SDK script itself is covered by `'strict-dynamic'` when your bundle inserts it (above):
 
-Prefer a nonce over `'unsafe-inline'`: v5 uses `data-csp-nonce="…"` on the script tag. Test the CSP in
-the browser console with the sandbox before going live.
+  ```
+  object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests; connect-src 'self' https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com; frame-src https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com; img-src 'self' data: https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com
+  ```
+
+  `'self'` stays in `connect-src` (your `/api` calls) and `img-src`. Drop `*.venmo.com` if you don't offer
+  Venmo. `style-src 'unsafe-inline'` already admits the SDK's inline styles; add the PayPal hosts to
+  `style-src` only if the console reports a blocked PayPal stylesheet.
+- **Policy B (per-response nonce, no `'strict-dynamic'`).** That header owns `script-src`: put the nonce
+  on the inserted element (`script.nonce = nonce`) and add the PayPal hosts to `script-src` (the SDK
+  injects further scripts without your nonce), plus the `connect-src`/`frame-src`/`img-src` entries above.
+  **`style-src` needs the same treatment**: bff-security's Policy B has `style-src 'self' 'nonce-{RANDOM}'`,
+  which blocks the SDK's stylesheets and its injected `<style>` elements. PayPal's CSP page
+  (https://developer.paypal.com/sdk/js/csp/) gives `style-src` the PayPal hosts plus the nonce, with
+  `nonce` **and** `data-csp-nonce` on the SDK script tag so the SDK stamps its own inline styles (v5; v6
+  has no documented equivalent yet). Its example writes `nonce-…` unquoted — the CSP grammar requires
+  `'nonce-…'`:
+
+  ```
+  style-src 'self' 'nonce-{RANDOM}' https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com
+  ```
+
+  Don't "fix" blocked styles by adding `'unsafe-inline'` next to the nonce: since CSP Level 2,
+  `'unsafe-inline'` is **ignored** in any directive that also contains a nonce or hash source. It only takes
+  effect when the directive has no nonce/hash — i.e. `style-src 'self' 'unsafe-inline' <PayPal hosts>`
+  while the nonce stays on `script-src` (the OWASP-accepted compromise for styles). Nonces never cover
+  `style="…"` attributes, so with a nonce in `style-src` those are blocked (CSSOM assignments such as
+  `el.style.color = …` are not). Verify in the browser console on the sandbox checkout — every
+  `Refused to apply inline style` / `Refused to load the stylesheet` report is a styling bug in production.
+
+The v6 host list is unverified (PayPal documents only v5): load the sandbox checkout with the browser
+console open and fix every CSP violation before going live.
 
 **Popup and cookie settings that a hardened app gets wrong:**
 
@@ -336,8 +423,9 @@ the browser console with the sandbox before going live.
 `<script src="https://www.paypal.com/sdk/js?client-id=…&currency=EUR&intent=capture&components=buttons">` —
 `currency`, `intent` and `commit` must match the order you create on the server; `buyer-country` is
 sandbox-only. `paypal.Buttons({ createOrder, onApprove, style }).render("#paypal-button-container")`;
-`createOrder` returns the order id string from your server; in `onApprove`, if the capture response has
-`details[0].issue === "INSTRUMENT_DECLINED"`, `return actions.restart()`. Don't self-host or bundle the
+`createOrder` returns the order id string from your server; in `onApprove`, if your capture endpoint returns
+`status` `INSTRUMENT_DECLINED` or `ORDER_NOT_APPROVED`, `return actions.restart()` (PayPal's sample checks
+`details[0].issue` because it forwards PayPal's raw error — the endpoint above maps it instead). Don't self-host or bundle the
 SDK file. Sample: https://github.com/paypal-examples/docs-examples/tree/main/standard-integration.
 
 ## Sandbox testing

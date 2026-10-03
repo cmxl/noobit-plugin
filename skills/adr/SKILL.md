@@ -1,6 +1,6 @@
 ---
 name: adr
-description: Use when recording or revisiting a technical/architecture decision — capturing why a choice was made, the context, and the consequences being accepted; writing an ADR / decision record (Nygard- or MADR-style); when someone says "let's record this decision", "document this trade-off", or an existing decision needs superseding. Not for narrating how a bug was fixed.
+description: Use when recording or revisiting a technical/architecture decision — capturing why a choice was made, the context, and the consequences being accepted; writing an ADR / decision record (requests for Nygard or MADR records get this format); when someone says "let's record this decision", "document this trade-off", or an existing decision needs superseding. Not for narrating how a bug was fixed.
 ---
 
 # Architecture Decision Records (Nygard + Alternatives)
@@ -83,8 +83,17 @@ for the implementing change).
 
 ## The index (`docs/adr/index.md`)
 
-A **generated** table of contents, created if absent and rewritten wholesale on every add or status
-change — never hand-edited.
+A **generated** table of contents, created if absent and regenerated on every add or status change by
+the bundled script — never hand-edited, never rebuilt by hand:
+
+```bash
+pwsh -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/regen-index.ps1" -Path docs/adr
+```
+
+`${CLAUDE_SKILL_DIR}` is this skill's base directory (shown as "Base directory for this skill" when it
+loads); if it appears unexpanded, substitute that path. The script (PowerShell 7, no modules) applies
+the rules below deterministically, rewrites only the block between the markers, and warns about records
+without an H1 or a recognizable Status line — fix the record, then rerun.
 
 ```markdown
 # Decision Records
@@ -97,10 +106,11 @@ change — never hand-edited.
 <!-- END GENERATED -->
 ```
 
-Rules: **newest filename date first**, ties by title A→Z; one row per **date-named** record file
-(`YYYY-MM-DD-*.md`) — ignore `index.md`, `README.md`, and any **numbered legacy ADRs**; Date comes from the filename prefix; Status is the
-status word from the Status line (`Superseded` rows keep the "by [title](file.md)" link; `Rejected` and
-`Deprecated` rows stay listed). The **Decision** cell is the record's H1 title, verbatim. Links are relative.
+Rules: **newest filename date first**, ties by title A→Z (ordinal, case-insensitive — culture-independent); one row per
+**date-named** record file (`YYYY-MM-DD-*.md` with a real date — others are skipped with a warning) — ignore `index.md`, `README.md`, and any **numbered legacy ADRs**; Date comes from the filename prefix; Status is the
+status word from the Status line (`Superseded` rows keep the `by [title](file.md)` link; `Rejected` and
+`Deprecated` rows stay listed). The **Decision** cell is the record's H1 title, verbatim except that `[`, `]` and `|` are backslash-escaped so the link and table stay intact (the same escaping applies to a `Superseded` row's `by [title](file.md)` link text). Links are relative.
+Text outside the markers (e.g. an intro line under the heading) is preserved.
 `docs/README.md` links `adr/index.md` (per `noobit:docs-maintenance`), not the individual records.
 
 **Pre-existing numbered ADRs** keep their own index and are left untouched — this skill owns only
@@ -128,7 +138,8 @@ Authoring **and** evaluation are the job of the **`noobit:tech-lead`** agent.
      you can no longer do, who else is affected. **Fold the findings back into Context, Alternatives, and Consequences** —
      the file keeps its six parts; the review does not become a separate section.
   5. **Write** `docs/adr/YYYY-MM-DD-kebab-title.md`.
-  6. **Regenerate** `docs/adr/index.md` (scan the folder, rebuild the table between the markers).
+  6. **Regenerate** `docs/adr/index.md` with the bundled `scripts/regen-index.ps1` (see The index) — also
+     after any status change to an older record.
   7. **Report**: the path written, the index updated, and any claim you could **not** verify (flagged, not
      invented).
 
@@ -139,7 +150,7 @@ Authoring **and** evaluation are the job of the **`noobit:tech-lead`** agent.
 | Adds a `0001-` number | This convention is unnumbered — date-named only. |
 | Adds a separate review/assessment section | Six parts only: Title, Status, Context, Decision, Alternatives considered, Consequences. |
 | Leaves out real alternatives | Record each option not taken and why — that's what prevents re-litigation. |
-| Skips `index.md` or hand-edits it | Regenerate it wholesale every time; it's generated. |
+| Skips `index.md`, hand-edits it, or rebuilds the table by hand | Run `scripts/regen-index.ps1` every time; it's generated. |
 | Skips the tech-lead evaluation | Every record is tech-lead authored — context verified, consequences stress-tested. |
 | Asserts context from memory | Context is checked against the live repo; unverifiable claims are flagged. |
 | Edits an Accepted decision | Supersede (or deprecate) via a new record; only the old Status line changes. |

@@ -1,25 +1,25 @@
 ---
 name: angular-ngrx-state
 description: >-
-  Use when creating or refactoring NgRx state in an Angular app — a Signal Store (@ngrx/signals,
-  signalStore, signalState, rxMethod, entities) or the classic Store (@ngrx/store, @ngrx/effects:
+  Use when creating or refactoring NgRx state in Angular — Signal Store (@ngrx/signals,
+  signalStore, signalState, rxMethod, entities) or classic Store (@ngrx/store, @ngrx/effects:
   actions, reducers, effects, selectors, facades); deciding "where should this state live";
-  persisting or rehydrating state across reloads (localStorage/sessionStorage); testing stores; or
-  when the user mentions NgRx, Signal Store or state management.
-  Plain signal()/computed()/linkedSignal()/resource() without a store belong to the Angular skills.
+  persisting/rehydrating state (localStorage/sessionStorage); testing stores; or when the user
+  mentions NgRx, Signal Store or state management. Plain signal()/computed()/resource() without a
+  store belong to the Angular skills.
 ---
 
 # Modern NgRx state management (Angular v20+)
 
-NgRx state management should be the default in Angular apps, and in v20+ apps the **Signal Store
-(`@ngrx/signals`) is the default choice**. It uses native signals, needs no boilerplate action
+Plain signals in components and services come first. When state needs a store, the **Signal Store
+(`@ngrx/signals`) is the default choice** in v20+ apps. It uses native signals, needs no boilerplate action
 plumbing, cleans up with the component that provides it, and now covers the full spectrum from
 local component state to global app state. Reach for the **classic global Store** only when the
 state genuinely earns it (see the decision guide).
 
-Everything here targets **NgRx 22 / Angular 22** (NgRx 22 needs Angular 22 + TypeScript 6.0) and
-the **functional, standalone** style; the patterns also hold for NgRx 20/21 on Angular 20/21. The
-older NgModule / class-based-effects / `StoreModule.forRoot` style is legacy — don't reproduce it.
+Everything here targets **NgRx 22 / Angular 22** (NgRx 22 peers on `@angular/core ^22`, and
+Angular 22's compiler requires TypeScript 6.0) and the **functional, standalone** style; the
+patterns also hold for NgRx 20/21 on Angular 20/21. The older NgModule / class-based-effects / `StoreModule.forRoot` style is legacy — don't reproduce it.
 Upgrade with `ng update @ngrx/store@<v> @ngrx/signals@<v>` (runs the migration schematics) after
 reading `ngrx.io/guide/migration/v<N>` — never by hand-bumping `package.json`.
 
@@ -80,7 +80,7 @@ Call these out because copying from old blog posts or pre-v18 code will bite you
   install it (`pnpm add @ngrx/operators` / `npm i @ngrx/operators`) if it isn't already in the
   project; it does not ship with `@ngrx/effects`. Since v22 only the object form
   `tapResponse({ next, error })` exists — the positional `(next, error)` form was removed.
-- **Don't use "selectors with props"** — deprecated, removed in v23. Use factory selectors,
+- **Don't use "selectors with props"** — deprecated, scheduled for removal in v23. Use factory selectors,
   view-model (dictionary) selectors, or `selectSignal`.
 - **`rxMethod` / `signalMethod` called with a signal or observable belong in an injection
   context** (constructor / field initializer) or get an explicit `{ injector }`. Elsewhere they
@@ -125,7 +125,7 @@ State changes must type-check and pass tests. After generating store code, run t
 and the affected unit tests before claiming it works — use whatever the project uses:
 
 ```bash
-ng build && ng test                      # standard Angular CLI
+ng build && ng test --no-watch           # standard Angular CLI (no watch mode in a verify step)
 # or, in an Nx workspace:
 nx build <app> && nx test <project>      # runner is often Vitest or Jest
 ```

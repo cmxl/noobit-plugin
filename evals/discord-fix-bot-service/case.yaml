@@ -1,0 +1,6 @@
+# Run settings (allowed_tools, max_turns, timeout_seconds, runs) live ONLY in prompt.md frontmatter, which
+# overrides matching case.yaml fields; this file only adds the scaffold.
+schema_version: "1.1"
+name: discord-fix-bot-service
+context:
+  scaffold_script: scaffold.sh

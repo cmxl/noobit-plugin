@@ -1,10 +1,11 @@
 #Requires -Version 7.0
 # Replicates the Claude Code setup (plugins, skills, MCP servers, global CLAUDE.md)
 # on a new machine. Safe to re-run: already-installed items produce "already exists"
-# errors that can be ignored. Requires PowerShell 7+, Node.js, git, and a logged-in
-# Claude Code CLI. Run from a clone of this repo (step 5 needs ../CLAUDE.md.example).
+# errors that can be ignored, and every re-run also updates marketplaces and plugins.
+# Requires PowerShell 7+, Node.js, git, the .NET SDK, and a logged-in Claude Code CLI. Run from a clone of this repo (step 5 needs ../CLAUDE.md.example).
 # See AGENT-SETUP.md for the full inventory.
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive setup: coloured progress for a person at a terminal')]
 param(
     # Azure DevOps organization for the 'ado' MCP server.
     # Omit to skip registering that server (everything else still installs).
@@ -15,7 +16,7 @@ $ErrorActionPreference = 'Continue'
 
 function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
 
-foreach ($tool in 'claude', 'git', 'node', 'npx') {
+foreach ($tool in 'claude', 'git', 'node', 'npx', 'dotnet') {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
         throw "Prerequisite missing: '$tool' not found on PATH. See AGENT-SETUP.md."
     }
@@ -48,9 +49,18 @@ $plugins = @(
     'github@claude-plugins-official'
     'azure@claude-plugins-official'
     'claude-md-management@claude-plugins-official'
-    'azure-agent-skills@microsoft-agent-skills'
 )
 foreach ($p in $plugins) { claude plugin install $p }
+
+# Re-runs update everything: third-party marketplaces don't auto-update by default.
+Step 'Updating marketplaces and plugins'
+claude plugin marketplace update
+foreach ($p in $plugins) { claude plugin update $p }
+
+# Project-scoped on purpose: azure-agent-skills@microsoft-agent-skills (~200 skills) would
+# crowd every other skill description out of the listing at user scope. Inside an Azure
+# project run:
+#   claude plugin install azure-agent-skills@microsoft-agent-skills --scope project
 
 # Project-scoped, not installed here: nx@nx-claude-plugins (used in noobit.dev).
 # Inside that project run:
@@ -103,10 +113,9 @@ if ($AdoOrg) {
     } else {
         claude mcp add --scope user ado -- npx -y '@azure-devops/mcp' $AdoOrg --authentication azcli
     }
-    Write-Host 'Note: the ado MCP server needs Azure CLI authentication — run: az login'
+    Write-Host 'Note: the ado MCP server needs Azure CLI authentication - run: az login'
 } else {
-    Write-Host "Skipped the 'ado' MCP server — re-run with -AdoOrg <organization> to register it."
-    Write-Host "(A later -AdoOrg re-run won't touch an existing ~/.claude/CLAUDE.md — add its ado bullet manually.)"
+    Write-Host "Skipped the 'ado' MCP server - re-run with -AdoOrg <organization> to register it."
 }
 
 # --- 5. Global CLAUDE.md -------------------------------------------------------
@@ -115,11 +124,17 @@ Step 'Global CLAUDE.md'
 $globalClaudeMd = Join-Path $HOME '.claude/CLAUDE.md'
 $example = Join-Path $PSScriptRoot '../CLAUDE.md.example'
 if (Test-Path $globalClaudeMd) {
-    Write-Host "$globalClaudeMd already exists — left untouched"
+    Write-Host "$globalClaudeMd already exists - left untouched (diff it against CLAUDE.md.example after updates)"
+    if ($AdoOrg -and -not (Select-String -LiteralPath $globalClaudeMd -SimpleMatch '`ado` MCP server' -Quiet)) {
+        Add-Content $globalClaudeMd ('- For Azure DevOps work (work items, PRs, pipelines, repos in the ' + $AdoOrg + ' org), use the `ado` MCP server''s tools; it authenticates via Azure CLI (`az login`).')
+        Write-Host 'Added the ado bullet to the existing global CLAUDE.md'
+    }
 } elseif (-not (Test-Path $example)) {
-    Write-Error "CLAUDE.md.example not found at $example — run this script from a clone of the repo."
+    Write-Error "CLAUDE.md.example not found at $example - run this script from a clone of the repo."
 } else {
-    Copy-Item $example $globalClaudeMd -ErrorAction Stop
+    # drop the "copy this into ..." note meant for readers of the example file
+    $text = (Get-Content -LiteralPath $example -Raw -ErrorAction Stop) -replace '(?s)<!-- setup:strip -->.*?<!-- /setup:strip -->\r?\n(?:\r?\n)?', ''
+    Set-Content -LiteralPath $globalClaudeMd -Value $text -NoNewline -ErrorAction Stop
     Add-Content $globalClaudeMd '- For Microsoft/Azure/.NET documentation, prefer the `microsoftdocs` MCP tools (Microsoft Learn search/fetch, returns clean Markdown) over WebFetch against learn.microsoft.com.'
     if ($AdoOrg) {
         Add-Content $globalClaudeMd ('- For Azure DevOps work (work items, PRs, pipelines, repos in the ' + $AdoOrg + ' org), use the `ado` MCP server''s tools; it authenticates via Azure CLI (`az login`).')

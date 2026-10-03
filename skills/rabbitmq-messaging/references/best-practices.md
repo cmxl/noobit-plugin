@@ -38,7 +38,7 @@ timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
 try
 {
     await channel.BasicPublishAsync(exchange, routingKey, mandatory: true, props,
-        JsonSerializer.SerializeToUtf8Bytes(evt, JsonCtx.Default.OrderCreated), timeoutCts.Token);
+        JsonSerializer.SerializeToUtf8Bytes(evt, AppJsonContext.Default.OrderCreated), timeoutCts.Token);
 }
 catch (PublishException ex) // nacked or returned (ex.IsReturn) — message is NOT safely stored
 {
@@ -87,8 +87,8 @@ A message is dead-lettered when: (1) rejected/nacked with `requeue: false`, (2) 
 ### Delayed messaging options
 
 1. **TTL + DLX retry queues (recommended, pure AMQP):** the failed message is dead-lettered into a retry queue with queue-level `x-message-ttl` and a DLX pointing back at the work queue. **Critical TTL caveat:** "Only when expired messages reach the head of a queue will they actually be discarded" (and quorum queues dead-letter expired messages only at the head too). Per-message `expiration` in a shared retry queue therefore breaks — a 30s-delay message stuck behind a 5m-delay message waits 5 minutes. **Use one retry queue per delay tier** (`orders.retry.30s`, `orders.retry.5m`), each with queue-level `x-message-ttl`, never per-message expiration in a shared queue.
-2. **`rabbitmq_delayed_message_exchange` plugin: archived — do not use.** Team RabbitMQ no longer maintains it (it depended on Mnesia, removed in 4.3.0); upstream points to native quorum-queue message delay in 4.4+ and to TTL + DLX.
-3. **Native quorum-queue delayed retry (4.3+):** `x-delayed-retry-type` (`disabled`/`all`/`failed`/`returned`) + `x-delayed-retry-min`/`-max` delay *requeued* messages in place (`delay = min(min_delay * delivery_count, max_delay)`). Not the house pattern yet: `returned` covers `nack(requeue: true)`, which never counts toward the delivery limit, so you still need your own cap (`x-acquired-count`). Evaluate before adopting; use option 1 meanwhile.
+2. **`rabbitmq_delayed_message_exchange` plugin: archived — do not use.** Team RabbitMQ no longer maintains it (it depended on Mnesia, removed in 4.3.0); upstream points to TTL + DLX and to native quorum-queue delays (option 3).
+3. **Native quorum-queue delayed retry (available since 4.3):** `x-delayed-retry-type` (`disabled`/`all`/`failed`/`returned`) + `x-delayed-retry-min`/`-max` delay *requeued* messages in place (`delay = min(min_delay * delivery_count, max_delay)`). Not the house pattern yet: `returned` covers `nack(requeue: true)`, which never counts toward the delivery limit, so you still need your own cap (`x-acquired-count`). Evaluate before adopting; use option 1 meanwhile.
 
 ### Retry / DLQ topology
 
@@ -158,7 +158,8 @@ public static class RetryTopology
         return attempts;
     }
 
-    // Confirmed publish to the DLQ; false = not safely parked → the caller nacks into the retry tier instead.
+    // Confirmed publish to the DLQ; false = not safely parked → the caller nacks into the retry tier instead,
+    // unless ct (shutdown) is cancelled — then it leaves the delivery unacked so no retry attempt is burned.
     public static async Task<bool> TryParkAsync(IChannel confirmChannel, string service, string workQueue,
         BasicDeliverEventArgs ea, Exception error, CancellationToken ct)
     {

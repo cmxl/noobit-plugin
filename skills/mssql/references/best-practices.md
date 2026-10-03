@@ -103,7 +103,8 @@ FROM sys.database_query_store_options;  -- actual != desired means it changed mo
 - Use the **actual** execution plan (or Query Store/`sys.dm_exec_query_stats`) — only actual plans carry runtime
   information: actual row counts, resource usage, and runtime warnings. `SET STATISTICS IO, TIME ON` for logical reads.
 - Operator warnings to chase first: **sort/hash spills to tempdb** (fix = better estimates or more memory —
-  memory grant feedback auto-corrects repeats on compat 140+), **implicit conversion warnings** on predicates
+  memory grant feedback auto-corrects repeats on compat 140+ — Enterprise edition or Azure SQL only, see Current
+  versions; on Standard fix the estimate yourself), **implicit conversion warnings** on predicates
   (type-affecting converts break seeks and estimates), **no join predicate** (accidental cartesian product),
   **excessive/insufficient memory grants**, **missing statistics**.
 - **Estimate skew**: compare *Estimated* vs *Actual Number of Rows* per operator. Documented workflow: check the
@@ -220,7 +221,7 @@ SELECT CHECKSUM_AGG(BINARY_CHECKSUM(*)) FROM (<query>) q;
 -- 2. Per-row hash: sentinel per nullable column, explicit styles, delimiter between every column
 SELECT Id,
        HASHBYTES('SHA2_256', CONCAT(
-           ISNULL(Name, N'~NULL~'),                                  N'|',
+           COALESCE(Name, N'~NULL~'),                                N'|',   -- COALESCE: ISNULL would truncate the sentinel to a short column's length
            ISNULL(CONVERT(nvarchar(30), CreatedAt, 126), N'~NULL~'), N'|',
            ISNULL(CONVERT(nvarchar(30), Score, 3), N'~NULL~'),       N'|',
            ISNULL(CONVERT(nvarchar(40), Amount), N'~NULL~'))) AS RowHash

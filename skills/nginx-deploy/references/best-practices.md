@@ -1,8 +1,9 @@
 # Best Practices: nginx + Let's Encrypt in front of ASP.NET Core
 
 Verified against official documentation, October 2026. Sources: nginx.org/en/docs,
-letsencrypt.org/docs, eff-certbot.readthedocs.io, and the Mozilla server-side TLS guidelines v6.0
-(now hosted at configurator.tlsref.org). Full URL list at the bottom. This file extends SKILL.md —
+letsencrypt.org/docs, eff-certbot.readthedocs.io, and the server-side TLS guidelines formerly
+published by Mozilla — moved to the community TLSRef project (docs.tlsref.org; Mozilla's
+ssl-config.mozilla.org generator redirects to configurator.tlsref.org). Full URL list at the bottom. This file extends SKILL.md —
 read that first; nothing here overrides it. Docker builds, images, and compose: see the `docker`
 skill.
 
@@ -22,7 +23,8 @@ skill.
   2028-02-16** (authorization reuse 10 days, then 7 hours) — ahead of the CA/B Forum caps of 100 days
   (from 2027-03-15) and 47 days (from 2029-03-15). Only unattended, ARI-aware renewal survives this.
 - **No expiry emails**: LE ended expiry notifications on 2025-06-04 — `--email` is now only an
-  account contact; monitor certificate expiry yourself.
+  account contact; monitor certificate expiry yourself. Certbot still needs either `-m <email>` or
+  `--register-unsafely-without-email` to create the account non-interactively (`-n`).
 - **Let's Encrypt OCSP is gone**: responders shut down 2025-08-06; certificates carry CRL URLs
   instead. `ssl_stapling` in nginx is a no-op for LE certs — leave it out.
 
@@ -52,13 +54,17 @@ skill.
   since 1.27.3) so a recreated app container's new IP is picked up without a reload.
 - **Catch-all server**: `listen 80 default_server; listen 443 ssl default_server;
   ssl_reject_handshake on; return 444;` — otherwise the first server block answers any Host header.
-  Pair with `server_tokens off;` and a real `AllowedHosts` in the app.
+  On :80 an unknown Host gets 444 (connection closed, no response); on :443 an unknown SNI never gets
+  that far — `ssl_reject_handshake` aborts the TLS handshake.
+  Pair with `server_tokens off;` and a real `AllowedHosts` in the app (the real hostnames plus `localhost` for the container healthcheck).
 - **`add_header` inheritance**: a level inherits `add_header` directives only if it defines none
   itself — one `add_header` in a `location` silently drops every server-level header.
   Repeat them, or use `add_header_inherit merge;` (since 1.29.3, so in stable 1.30).
 - **Rate limiting at the edge**: `limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;` +
   `limit_req zone=login burst=5 nodelay;` on login/auth locations, `limit_conn` for connection
   floods. App-level rate limiting (ASP.NET Core) stays the source of truth for per-user limits.
+  e2e reuses `app.conf` with all traffic from one IP, so 5r/m rejects the suite's logins: drop or
+  raise the `limit_req` line in the generated e2e conf (e.g. `sed -e '/limit_req zone=login/d'`).
 - **IPv6**: add `listen [::]:80;` / `listen [::]:443 ssl;` (and `[::]` on the catch-all) only if
   Docker IPv6 is enabled for the published ports — binding fails in a container without IPv6.
 - **Static assets**: the BFF serves the Angular build, so long-cache headers for hashed bundles
@@ -71,7 +77,7 @@ skill.
   the module is compiled in and add the `quic` listener + `Alt-Svc` header.
 - Compress in nginx only (gzip + `gzip_vary on;`) — never double-compress in Kestrel.
 
-### TLS configuration (Mozilla guidelines v6.0 — ssl-config.mozilla.org now redirects to configurator.tlsref.org)
+### TLS configuration (TLSRef guidelines, ex-Mozilla — generate with configurator.tlsref.org)
 
 Intermediate profile (the correct default; "modern" = TLS 1.3-only, drops older clients):
 
@@ -95,7 +101,12 @@ in August 2025; revocation is CRL-based and needs no server config.
 ### ACME challenge choice and renewal (Let's Encrypt + certbot docs)
 
 - **HTTP-01 (webroot)** — the SKILL.md default and the right one for a single compose host: port 80
-  must be reachable, no wildcards, trivially automated, no credentials stored anywhere.
+  must be reachable, no wildcards, trivially automated, no credentials stored anywhere. Only the
+  very first issuance uses certbot's `--standalone` HTTP-01 server (nginx can't start without the
+  cert yet). Renewals then use webroot because the renew loop passes `--webroot -w …` ("if a
+  certificate is successfully renewed using specified options, those options will be saved" —
+  certbot docs); `certbot reconfigure … --webroot` stores it right away after a staging test
+  renewal, which is why SKILL.md keeps it as the post-issuance smoke test.
 - **DNS-01** — required for wildcards and works without any public port, but the DNS API credential
   then lives on the host ("risky to store API credentials on web servers" per LE docs) and
   propagation timing varies. Use only when you actually need `*.example.com` or the host has no
@@ -122,7 +133,7 @@ in August 2025; revocation is CRL-based and needs no server config.
 | Enabling HTTP/3 because a blog said so | Module is experimental and often not compiled in | `nginx -V` and look for `http_v3_module`; skip until stable |
 | `proxy_buffering off` globally "for performance" | Slow clients tie up Kestrel connections | Keep on; disable per-location or via `X-Accel-Buffering: no` for streams only |
 | Wildcard cert "to keep it simple" | Forces DNS-01 + API creds on the host | Per-hostname HTTP-01 certs; SAN list up to 100 names on `classic`, 25 on `tlsserver`/`shortlived` |
-| Trusting all proxies in `ForwardedHeadersOptions` while publishing app port | Header spoofing → scheme/IP forgery | App port never published; narrow `KnownIPNetworks` to the compose network instead of leaving both lists empty (MS docs: trusting any source is "not recommended") |
+| Trusting all proxies in `ForwardedHeadersOptions` while publishing app port | Header spoofing → scheme/IP forgery | App port never published; narrow `KnownIPNetworks` to the `edge` network's fixed subnet instead of leaving both lists empty (MS docs: trusting any source is "not recommended") |
 | `Connection $http_connection` for WebSockets | Forwards whatever the client sent | `map $http_upgrade $connection_upgrade` (nginx WebSocket docs) |
 | Copying the docs' map verbatim (`'' close`) | Every plain request opens a new connection to Kestrel — upstream keepalive is off | `map $http_upgrade $connection_upgrade { default upgrade; '' ''; }` |
 
@@ -145,4 +156,5 @@ in August 2025; revocation is CRL-based and needs no server config.
 - https://letsencrypt.org/2025/12/02/from-90-to-45/
 - https://learn.microsoft.com/aspnet/core/host-and-deploy/proxy-load-balancer
 - https://eff-certbot.readthedocs.io/en/stable/using.html
-- https://configurator.tlsref.org/ (Mozilla server-side TLS guidelines v6.0; ssl-config.mozilla.org redirects here)
+- https://configurator.tlsref.org/ (config generator; ssl-config.mozilla.org redirects here)
+- https://docs.tlsref.org/ (server-side TLS guidelines; wiki.mozilla.org/Security/Server_Side_TLS points here)

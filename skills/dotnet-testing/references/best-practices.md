@@ -1,6 +1,6 @@
 # .NET Testing Best Practices — xUnit v3 + Testcontainers
 
-Verified against official documentation and a compiled + executed sample (xUnit 4.0.1, SDK 10.0.400, Docker), October 2026. Primary sources: xunit.net (v3 getting started, 4.0.0 release notes, MTP integration, code coverage with MTP, parallelism, runner config), dotnet.testcontainers.org (incl. xUnit.net integration, CI/CD), learn.microsoft.com (`dotnet test` MTP mode, integration tests, unit testing best practices, EF Core testing strategy), github.com/nsubstitute/NSubstitute/releases, github.com/jbogard/Respawn, nuget.org version pages. Extends `SKILL.md`; conventions there (real infra via Testcontainers, no mocked DbContext, no InMemory/SQLite stand-in) apply to every sample here.
+Verified against official documentation and a compiled + executed sample (`xunit.v3` 4.0.1, SDK 10.0.401, Docker), October 2026. Primary sources: xunit.net (v3 getting started, 4.0.0 release notes, MTP integration, code coverage with MTP, parallelism, runner config), dotnet.testcontainers.org (incl. xUnit.net integration, CI/CD), learn.microsoft.com (`dotnet test` MTP mode, integration tests, unit testing best practices, EF Core testing strategy), github.com/nsubstitute/NSubstitute/releases, github.com/jbogard/Respawn, nuget.org version pages. Extends `SKILL.md`; conventions there (real infra via Testcontainers, no mocked DbContext, no InMemory/SQLite stand-in) apply to every sample here.
 
 ## Current versions (October 2026)
 
@@ -10,9 +10,9 @@ Patch numbers move fast — check nuget.org before pinning; the majors and the n
 |---|---|---|
 | `xunit.v3` | **4.0.1** (2026-09-12; 4.0.0 on 2026-08-15) | 4.x is **MTP v2 only** — MTP v1 support and the `xunit.v3.mtp-v1` variants are gone (they only exist for 3.x); remaining variants: `xunit.v3` (= MTP v2), `xunit.v3.mtp-v2`, `xunit.v3.mtp-off` (no MTP at all — only for exotic runners). Mono is no longer supported. Breaking for config: see *Parallelism model*. |
 | Microsoft.Testing.Platform (MTP) | **2.4.x** (pulled in by `xunit.v3` 4.0.1) | Microsoft's VSTest replacement; `Microsoft.Testing.Platform.MSBuild` (transitive) auto-registers extension packages. |
-| `Microsoft.Testing.Extensions.CodeCoverage` | **18.11.2** | 18.x targets MTP v2 (18.11.2 depends on MTP ≥ 2.4.0, matching xUnit 4.0.1). Don't pair it with MTP v1. |
+| `Microsoft.Testing.Extensions.CodeCoverage` | **18.11.2** | 18.x targets MTP v2 (18.11.2 depends on MTP ≥ 2.4.0, matching `xunit.v3` 4.0.1). Don't pair it with MTP v1. |
 | `xunit.runner.visualstudio` | 4.0.0 | Only for the legacy VSTest path (with `Microsoft.NET.Test.Sdk`). Not needed for MTP + SDK 10. |
-| `Testcontainers` (+ modules) | **4.15.0** (2026-09-06) | Modules: `Testcontainers.PostgreSql`, `.MsSql`, `.Redis`, `.RabbitMq`, … `Testcontainers.XunitV3` 4.15.0 — verified working on xUnit 4.0.1 (it declares a 3.2.2 minimum). |
+| `Testcontainers` (+ modules) | **4.15.0** (2026-09-06) | Modules: `Testcontainers.PostgreSql`, `.MsSql`, `.Redis`, `.RabbitMq`, … `Testcontainers.XunitV3` 4.15.0 — verified working on `xunit.v3` 4.0.1 (it declares a 3.2.2 minimum). |
 | `NSubstitute` | **6.2.0** (6.0.0 GA 2026-07-12) | 6.0: targets .NET 8 + netstandard2.0, legacy obsolete APIs removed, `CompatArg` obsolete. 6.0 turned on nullable annotations; **6.1 reverted them** — don't chase 6.0-era nullability warnings, upgrade. |
 | `NSubstitute.Analyzers.CSharp` | 1.0.17 | Always add (`PrivateAssets="all"`). |
 | `Respawn` | **7.0.0** (2025-11-30) | Adapters: SqlServer, Postgres, MySql, Oracle, Informix. |
@@ -45,14 +45,7 @@ v3 test projects are stand-alone executables — `OutputType` must be `Exe`, and
 </Project>
 ```
 
-`global.json` (repo root, see `aspnet-backend`) switches SDK 10's `dotnet test` into MTP mode:
-
-```json
-{
-  "sdk": { "version": "10.0.100", "rollForward": "latestFeature" },
-  "test": { "runner": "Microsoft.Testing.Platform" }
-}
-```
+The repo-root `global.json` (canonical block in `aspnet-backend` → "Repo-root build files") carries `"test": { "runner": "Microsoft.Testing.Platform" }`, which switches SDK 10's `dotnet test` into MTP mode.
 
 SDK 8/9 only: instead set `<TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>` (VSTest-bridge mode). When migrating to SDK 10 MTP mode, remove it along with `TestingPlatformCaptureOutput` / `TestingPlatformShowTestsFailure`.
 
@@ -63,14 +56,14 @@ In MTP mode, test-app options go directly on `dotnet test`; `--` is optional (ke
 ```
 dotnet test --solution Shop.slnx                              # was: dotnet test Shop.slnx
 dotnet test --project tests/Orders.Tests                      # was: dotnet test tests/Orders.Tests
-dotnet test --filter-not-trait "Category=Integration"
+dotnet test --filter-not-trait "Category=Integration"            # integration classes carry [Trait("Category", "Integration")]
 dotnet test --filter-class Orders.Tests.PriceCalculatorTests
 dotnet test --coverage --coverage-output-format cobertura
 dotnet test --report-xunit-trx --report-xunit-junit --results-directory TestResults
 ```
 
-- Filters: `--filter-class`, `--filter-method`, `--filter-namespace`, `--filter-trait` and their `--filter-not-*` twins (several values per switch: `--filter-class Foo Bar`), `--filter-query` (query language). xUnit 4 also accepts a single VSTest-syntax `--filter "FullyQualifiedName~X"`, but it can't be combined with the other filter kinds — prefer the native flags.
-- Reports (xUnit 4 names, verified via `dotnet test -?`): `--report-xunit-trx`, `--report-xunit-junit`, `--report-xunit-xml`, `--report-xunit-html`, `--report-xunit-ctrf`, `--report-xunit-nunit`, `--report-xunit-markdown`, each with a `-filename` variant (filename only, no path). The xunit.net MTP page still shows the 3.x names `--report-junit` / `--report-xunit` — on 4.x those fail with exit code 5.
+- Filters: `--filter-class`, `--filter-method`, `--filter-namespace`, `--filter-trait` and their `--filter-not-*` twins (several values per switch: `--filter-class Foo Bar`), `--filter-query` (query language). The `xunit.v3` 4.x runner also accepts a single VSTest-syntax `--filter "FullyQualifiedName~X"`, but it can't be combined with the other filter kinds — prefer the native flags.
+- Reports (`xunit.v3` 4.x names, verified via `dotnet test -?`): `--report-xunit-trx`, `--report-xunit-junit`, `--report-xunit-xml`, `--report-xunit-html`, `--report-xunit-ctrf`, `--report-xunit-nunit`, `--report-xunit-markdown`, each with a `-filename` variant (filename only, no path). The xunit.net MTP page still shows the 3.x names `--report-junit` / `--report-xunit` — on 4.x those fail with exit code 5.
 - Exit code **5** = an option some test app didn't recognize. In a solution, every targeted project must understand every flag: `--coverage` fails for projects without the CodeCoverage package. Either reference the extension in all test projects (e.g. via `Directory.Build.props`) or route args per project with the `TestingPlatformCommandLineArguments` MSBuild property.
 - Other entry points: `dotnet run --project X` (args after `--`), or the built executable directly. `--xunit-info` adds xUnit-style verbose output.
 
@@ -89,7 +82,7 @@ dotnet test --report-xunit-trx --report-xunit-junit --results-directory TestResu
 ### Parallelism model
 
 - Unit of parallelism is the **test collection**. Default: one collection per class → tests in a class run sequentially, classes run in parallel. All classes sharing a `[Collection("name")]` run sequentially with respect to each other.
-- **xUnit 4.0 moved assembly-level settings to `[assembly: Parallelization]`** (namespace `Xunit.v3`; enums `ParallelMode`/`ParallelAlgorithm` in `Xunit.Sdk`). The old `CollectionBehavior` properties `DisableTestParallelization`, `MaxParallelThreads`, `ParallelAlgorithm` are `[Obsolete(error: true)]` — **compile error CS0619** on 4.x. `CollectionBehavior(CollectionBehavior.CollectionPerAssembly)` itself still works.
+- **The `xunit.v3` package 4.0 moved assembly-level settings to `[assembly: Parallelization]`** (namespace `Xunit.v3`; enums `ParallelMode`/`ParallelAlgorithm` in `Xunit.Sdk`). The old `CollectionBehavior` properties `DisableTestParallelization`, `MaxParallelThreads`, `ParallelAlgorithm` are `[Obsolete(error: true)]` — **compile error CS0619** on 4.x. `CollectionBehavior(CollectionBehavior.CollectionPerAssembly)` itself still works.
 
 ```csharp
 using Xunit.Sdk;
@@ -148,7 +141,7 @@ var app = new ContainerBuilder("ghcr.io/acme/worker:1.4")
     .WithPortBinding(8080, assignRandomHostPort: true)
     .WithWaitStrategy(Wait.ForUnixContainer()
         .UntilHttpRequestIsSucceeded(r => r
-            .ForPath("/health").ForPort(8080).ForStatusCode(HttpStatusCode.OK)))
+            .ForPath("/health/ready").ForPort(8080).ForStatusCode(HttpStatusCode.OK)))
     .Build();
 await app.StartAsync(TestContext.Current.CancellationToken);
 ```
@@ -184,7 +177,8 @@ public sealed class SqlSmokeTests(PgFixture db) : IClassFixture<PgFixture>
 - `Microsoft.AspNetCore.Mvc.Testing`; expose the entry point with `public partial class Program;` at the bottom of `Program.cs`.
 - `WebApplicationFactory<Program>` implements `IAsyncDisposable` with a `ValueTask DisposeAsync()` — this composes cleanly with v3's `ValueTask`-based `IAsyncLifetime` (override `DisposeAsync`, call `base.DisposeAsync()`, then dispose containers), exactly as the `ApiFixture` in SKILL.md does.
 - Order inside `InitializeAsync`: start containers → first `Services`/`Server` access (boots the app with the container connection strings from `ConfigureWebHost`/`UseSetting`) → `Database.MigrateAsync(ct)` in a scope → `Respawner.CreateAsync`. Per-test service overrides: `factory.WithWebHostBuilder(b => b.ConfigureTestServices(s => ...))`.
-- Auth: register a test scheme — `services.AddAuthentication(o => { o.DefaultAuthenticateScheme = "Test"; o.DefaultChallengeScheme = "Test"; }).AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { })` where `TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>` returns a ticket with the desired claims. Use `CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false })` when asserting redirects/401s.
+- Auth: register a test scheme — `services.AddAuthentication(o => { o.DefaultAuthenticateScheme = "Test"; o.DefaultChallengeScheme = "Test"; }).AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { })` where `TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>` returns a ticket with the desired claims.
+- **Client options for a cookie BFF:** `CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), AllowAutoRedirect = false })` (`HandleCookies` defaults to `true`). The default base address is `http://localhost`, and every BFF cookie (`__Host-session`, `__Host-af`, `XSRF-TOKEN`) is `Secure` — the client's cookie container never sends a `Secure` cookie over `http`, so every antiforgery-validated write fails with 400 (and `UseHttpsRedirection` answers plain-HTTP requests with a redirect). `AllowAutoRedirect = false` keeps 302-vs-401 assertions honest.
 - Writes through a cookie-BFF API need the antiforgery header (`bff-security`). Put one helper on the
   fixture: fetch `/api/me` (it mints the `XSRF-TOKEN` cookie, even on 401) and send the value as
   `X-XSRF-TOKEN` on every request:
@@ -192,7 +186,11 @@ public sealed class SqlSmokeTests(PgFixture db) : IClassFixture<PgFixture>
   ```csharp
   public async Task<HttpClient> CreateAuthenticatedClientAsync(CancellationToken ct)
   {
-      var client = CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+      var client = CreateClient(new WebApplicationFactoryClientOptions
+      {
+          BaseAddress = new Uri("https://localhost"),   // Secure cookies are only resent over https
+          AllowAutoRedirect = false,                    // HandleCookies defaults to true
+      });
       using var me = await client.GetAsync("/api/me", ct);       // TestAuthHandler → the test user
       var xsrf = me.Headers.GetValues("Set-Cookie")
           .Select(c => c.Split(';')[0])
@@ -206,11 +204,49 @@ public sealed class SqlSmokeTests(PgFixture db) : IClassFixture<PgFixture>
 [Fact]
 public async Task Get_orders_returns_200()
 {
-    var client = api.CreateClient();
+    var client = await api.CreateAuthenticatedClientAsync(TestContext.Current.CancellationToken);
     var response = await client.GetAsync("/api/orders", TestContext.Current.CancellationToken);
     Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 }
 ```
+
+### Rate limits in integration tests
+
+`bff-security`'s limiters are configuration-bound (`RateLimiting:Global:*` default 100 / 60 s, `RateLimiting:Auth:*` default 5 / 60 s). Under `WebApplicationFactory` every request comes from the same TestServer remote IP and `TestAuthHandler` authenticates every request as the same user, so the whole suite lands in **one** global partition and **one** auth partition — a suite with more than 100 requests per minute (or 5 logins) starts failing with 429 depending on run order. `ApiFixture.ConfigureWebHost` therefore raises both limits with `UseSetting("RateLimiting:Global:PermitLimit", "100000")` and `UseSetting("RateLimiting:Auth:PermitLimit", "100000")`.
+
+Production values stay covered by **one** dedicated test on a derived factory. `WithWebHostBuilder` runs the fixture's `ConfigureWebHost` first and the delegate second, so the later `UseSetting` wins (verified: the derived factory reads `5`, the fixture still `100000`). The derived factory is its own app instance with fresh limiter partitions:
+
+```csharp
+[Collection(nameof(ApiCollection))]
+[Trait("Category", "Integration")]
+public sealed class RateLimitTests(ApiFixture api)
+{
+    [Fact]
+    public async Task Login_is_rejected_with_429_after_the_production_permit_limit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var prod = api.WithWebHostBuilder(b => b
+            .UseSetting("RateLimiting:Global:PermitLimit", "100")   // production defaults
+            .UseSetting("RateLimiting:Auth:PermitLimit", "5"));
+        using var client = prod.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"), AllowAutoRedirect = false,
+        });
+
+        for (var i = 0; i < 5; i++)                                 // every request spends a permit, whatever its status
+        {
+            using var allowed = await client.PostAsJsonAsync("/api/auth/login", new { userName = "x", password = "y" }, ct);
+            Assert.NotEqual(HttpStatusCode.TooManyRequests, allowed.StatusCode);
+        }
+
+        using var rejected = await client.PostAsJsonAsync("/api/auth/login", new { userName = "x", password = "y" }, ct);
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+        Assert.True(rejected.Headers.Contains("Retry-After"));
+    }
+}
+```
+
+The limiter middleware runs before the endpoint (and its antiforgery filter), so the permits are spent even though these tokenless POSTs are answered with 400 — the test doesn't need a valid login.
 
 ### Respawn 7.x
 
@@ -260,7 +296,7 @@ Real broker, throwaway probe queue bound before the act, poll with a deadline (R
 
 ```csharp
 var ct = TestContext.Current.CancellationToken;
-var factory = new ConnectionFactory { Uri = new Uri(rabbit.Broker.GetConnectionString()) }; // RabbitMqBuilder("rabbitmq:4.3-management")
+var factory = new ConnectionFactory { Uri = new Uri(rabbit.Broker.GetConnectionString()) }; // RabbitMqBuilder("rabbitmq:4-management") — same tag as production compose (docker)
 await using var conn = await factory.CreateConnectionAsync(ct);
 await using var channel = await conn.CreateChannelAsync(cancellationToken: ct);
 
@@ -268,8 +304,7 @@ await using var channel = await conn.CreateChannelAsync(cancellationToken: ct);
 var probe = await channel.QueueDeclareAsync(cancellationToken: ct);
 await channel.QueueBindAsync(probe.QueueName, "orders.events", "order.created", cancellationToken: ct); // {service}.events
 
-// act — writes through the BFF need the antiforgery header (bff-security): GET /api/me first,
-// then send the XSRF-TOKEN cookie value as X-XSRF-TOKEN (wrap this in a test-client helper)
+// act — client = await api.CreateAuthenticatedClientAsync(ct): https base address + X-XSRF-TOKEN (above)
 await client.PostAsJsonAsync("/api/orders", new { productId = 1, qty = 2 }, ct);
 
 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -278,7 +313,7 @@ BasicGetResult? msg;
 while ((msg = await channel.BasicGetAsync(probe.QueueName, autoAck: true, deadline.Token)) is null)
     await Task.Delay(50, deadline.Token);
 
-var evt = JsonSerializer.Deserialize(msg.Body.Span, JsonCtx.Default.OrderCreated); // same contract as the publisher
+var evt = JsonSerializer.Deserialize(msg.Body.Span, AppJsonContext.Default.OrderCreated); // same contract as the publisher
 Assert.Equal(2, evt!.Quantity);
 ```
 
@@ -325,9 +360,9 @@ Assert.Equal(84m, result.Total);                             // assert outcome, 
 | Anti-pattern | Why / Fix |
 |---|---|
 | `dotnet test X.sln -- --filter-not-trait ...` on SDK 10 MTP mode | Positional paths are rejected (`--solution`/`--project`); `--` is unnecessary. The "after `--`" rule is the SDK 8/9 VSTest-bridge mode. |
-| `xunit.v3.mtp-v1` / MTP v1 extensions with xUnit 4 | 4.x is MTP v2 only; the `mtp-v1` variants exist only for 3.x. Use `xunit.v3` and MTP v2 extension versions (CodeCoverage 18.x). |
-| `[assembly: CollectionBehavior(DisableTestParallelization = true)]` / `MaxParallelThreads` / `ParallelAlgorithm` | CS0619 compile error on xUnit 4. Use `[assembly: Parallelization(Mode/MaxThreads/Algorithm)]`; JSON key `parallelMode`. |
-| `--report-junit` / `--report-xunit` on xUnit 4 | Renamed to `--report-xunit-junit` / `--report-xunit-xml`; old names → exit code 5. |
+| `xunit.v3.mtp-v1` / MTP v1 extensions with `xunit.v3` 4.x | 4.x is MTP v2 only; the `mtp-v1` variants exist only for 3.x. Use `xunit.v3` and MTP v2 extension versions (CodeCoverage 18.x). |
+| `[assembly: CollectionBehavior(DisableTestParallelization = true)]` / `MaxParallelThreads` / `ParallelAlgorithm` | CS0619 compile error on `xunit.v3` 4.x. Use `[assembly: Parallelization(Mode/MaxThreads/Algorithm)]`; JSON key `parallelMode`. |
+| `--report-junit` / `--report-xunit` on `xunit.v3` 4.x | Renamed to `--report-xunit-junit` / `--report-xunit-xml`; old names → exit code 5. |
 | Mixing v2 packages (`xunit`, `xunit.abstractions`, `xunit.console`) into a v3 project | v3 renames: `xunit` → `xunit.v3`, `xunit.core` → `xunit.v3.core`; `xunit.abstractions`/`xunit.console` are removed. |
 | Cleanup in `Dispose()` when the class also implements `IAsyncLifetime`/`IAsyncDisposable` | v3 calls only `DisposeAsync()` when both exist — the `Dispose()` never runs. Put all cleanup in `DisposeAsync`. |
 | `Respawner.CreateAsync` before the schema exists, or without ignoring `__EFMigrationsHistory` | Empty plan (nothing gets reset) or wiped migration history. Migrate first; ignore the history table. |

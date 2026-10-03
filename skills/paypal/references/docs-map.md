@@ -27,7 +27,9 @@ and search it — e.g. for a field's `maxLength` or an enum — instead of relyi
 | REST API index | https://developer.paypal.com/api/rest/ |
 | Request conventions (base URLs, headers, idempotency) | https://developer.paypal.com/api/rest/requests/ |
 | Authentication (OAuth 2.0) | https://developer.paypal.com/api/rest/authentication/ |
-| Orders v2 error issues (e.g. `ORDER_ALREADY_CAPTURED`) | https://developer.paypal.com/api/rest/reference/orders/v2/errors/ |
+| Orders v2 error issues (e.g. `ORDER_ALREADY_CAPTURED`, `INSTRUMENT_DECLINED`, `PREVIOUS_REQUEST_IN_PROGRESS`) | https://developer.paypal.com/api/rest/reference/orders/v2/errors/ |
+| Handle funding failures (`INSTRUMENT_DECLINED` → restart) | https://developer.paypal.com/v5/checkout/handle-funding-failure |
+| PayPal IP ranges (allow-listing "not recommended") | https://www.paypal.com/us/cshelp/article/what-are-the-ip-addresses-for-paypal-nvpsoap-servers-ts1056 |
 | Webhooks overview (retries, limits) | https://developer.paypal.com/api/rest/webhooks/ |
 | Webhook integration + signature verification | https://developer.paypal.com/api/rest/webhooks/rest/ |
 | Webhook event names | https://developer.paypal.com/api/rest/webhooks/event-names/ |
@@ -62,7 +64,7 @@ Treat these as open questions and verify against your own sandbox when they matt
 | Declined capture event name | event-names page: `PAYMENT.CAPTURE.DECLINED` under Payments v2; `.DENIED` under Payments v1 (deprecated) and Marketplaces/platforms | webhooks spec (simulate-event) mentions `.DENIED` | Subscribe to `DECLINED` (the v2 event); handling `DENIED` too is harmless. Confirm with `GET /v1/notifications/webhooks-event-types` |
 | `PayPal-Request-Id` retention | Orders spec: 6 h (72 h via account manager) | requests page: "up to 45 days" (generic, refund example) — possibly per-API | Assume 6 h for orders; don't rely on it for long-delayed retries — use your own unique constraints |
 | Resource of `PAYMENT.CAPTURE.REFUNDED` / `.REVERSED` | event-names page links inconsistent schemas | `payments_payment_v2.json` sample `PAYMENT.CAPTURE.REFUNDED` event: `resource_type: "refund"`, `links[] rel: up` → capture; no `.REVERSED` sample | Route on `resource_type` per event; re-fetch via API |
-| `PAYPAL-AUTH-ALGO` header | not listed on the integration page | spec: `auth_algo` "extract from the PAYPAL-AUTH-ALGO header" | Store it; the postback requires it |
+| `PAYPAL-AUTH-ALGO` header | integration page ("Integrate webhooks"): its header list names only `paypal-transmission-id`, `-transmission-time`, `-cert-url`, `-transmission-sig`, but its postback sample sends `"auth_algo": "SHA256withRSA"` | spec: `auth_algo` "extract from the PAYPAL-AUTH-ALGO header" | Store it; the postback requires `auth_algo`. `SHA256withRSA` is the only documented value — a different or missing value fails verification (`Rejected`), and the rejection-rate alert surfaces it |
 
 **Not documented anywhere official** (state as assumption if you rely on it): delivery timeout value,
 ordering guarantees (assume none), event retention/search window, cert-URL domain rules.

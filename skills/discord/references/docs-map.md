@@ -6,7 +6,8 @@ detail, or something seems off, check these sources in order and say which one y
 ## 1. Discord's official docs (source of truth for the platform)
 
 - Home: https://docs.discord.com/developers/intro. The docs moved to Mintlify on this domain (changelog
-  2026-02-10); old `discord.com/developers/docs/...` links redirect.
+  2026-02-10); old `https://discord.com/developers/docs/<path>` links answer **301** to
+  `https://docs.discord.com/developers/<path>` — cite the new URL, never the old one.
 - Discord also offers a docs MCP server: https://docs.discord.com/mcp.
 - **Full page index:** https://docs.discord.com/llms.txt
 - **Raw markdown of any page:** append `.md` to its URL, e.g.
@@ -15,7 +16,7 @@ detail, or something seems off, check these sources in order and say which one y
 - **Changelog:** https://docs.discord.com/developers/change-log. Check it before claiming something is new,
   deprecated or a limit.
 
-| Topic | Path (under `/developers/`) |
+| Topic | Path (under `https://docs.discord.com/developers/`; all answered 200, October 2026) |
 |---|---|
 | Interactions: receive, respond, callback types, HTTP endpoint | `interactions/receiving-and-responding` |
 | Application commands, limits, permissions, contexts | `interactions/application-commands` |
@@ -72,22 +73,8 @@ Ways to check fast:
   `IHttpClientFactory`, using the bot token and a `DiscordBot (url, version)` User-Agent. Rate limits are
   then your responsibility: parse the `X-RateLimit-*` headers.
 
-## 4. Verification log
+## 4. Verification status
 
-- 2026-10-02: Discord docs (Mintlify, `.md` sources) and Discord.Net **3.20.1** (tag source and NuGet).
-  Reference code compiled on .NET SDK 10.0.400. 37 tests passed (cards, routing, signed HTTP end-to-end
-  including error-path timing, webhook events, publisher, gateway lifecycle). A startup smoke test against
-  discord.com confirmed that a bad token now fails startup.
-- 2026-10-02 (independent review against the 3.20.1 tag): fixed a 5 s stall on unknown commands in HTTP mode, a
-  token check that threw on valid tokens, the premium-button helper bug, public error leaks after public
-  defers, the HTTP-mode precondition limitation, and DM parsing on an anonymous client; eval round 2 then
-  surfaced the blocking `DiscordWebhookClient` constructor (now created off-thread on first use).
-- 2026-10-03 (second review round, Discord.Net 3.20.1 tag + docs repo): health checks kept dependency-free,
-  webhook client no longer caches a failed construction, autocomplete handlers resolve scoped services per call,
-  bounded body reads (chunked) on both signed endpoints, ±5 min replay check on interactions, Content-Type on
-  Webhook Events 204s, inbox resolved from `RequestServices`, request-abort handling, cancellable startup,
-  registration off the gateway task, sharded variant with error replies and fatal-close stop, order-independent
-  inbox test. Every `File.cs` block re-extracted into one solution (.NET 10, xunit.v3 4.0.1, NSubstitute 6.2.0):
-  **0 errors, 0 warnings, 49/49 tests pass.** Not yet verified against a live guild: the valid-token startup
-  path and real Discord acceptance of each payload. Run the manual smoke test on a dev application before
-  relying on it.
+Verified against Discord.Net 3.20.1 / docs.discord.com, October 2026. Not yet verified against a live guild
+(valid-token startup, Discord's acceptance of each payload): run the manual smoke test on a dev application
+(testing.md) before relying on it.

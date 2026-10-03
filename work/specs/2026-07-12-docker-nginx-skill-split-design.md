@@ -1,7 +1,7 @@
 # Design: split `docker-nginx-deploy` into `docker` + `nginx-deploy`
 
 **Date:** 2026-07-12
-**Status:** approved design, pending implementation plan
+**Status:** implemented (v1.5.0)
 **Ships as:** v1.5.0
 
 ## Motivation

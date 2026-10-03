@@ -1,6 +1,6 @@
 # Claude Code machine setup — full inventory
 
-Snapshot of everything installed on the primary machine (2026-07-17).
+Snapshot of everything installed on the primary machine (2026-10-03).
 To replicate on a new machine, clone this repo and run [`setup-machine.ps1`](setup-machine.ps1)
 from the clone (PowerShell 7+ — enforced; the script reads `../CLAUDE.md.example`):
 
@@ -30,13 +30,20 @@ pwsh setup/setup-machine.ps1 -AdoOrg <your-azure-devops-org>   # -AdoOrg optiona
 | `github` | claude-plugins-official | GitHub MCP tools |
 | `azure` | claude-plugins-official | Azure MCP tools + skills |
 | `claude-md-management` | claude-plugins-official | CLAUDE.md audit/improve |
-| `azure-agent-skills` | microsoft-agent-skills | Per-service Azure skills (large set) |
 
 Project-scoped (not installed globally):
 
 | Plugin | Marketplace | Project |
 |---|---|---|
 | `nx` | nx-claude-plugins | `E:\Source\noobit.dev` — reinstall inside that project on machines that build it |
+| `azure-agent-skills` | microsoft-agent-skills | Azure projects — `claude plugin install azure-agent-skills@microsoft-agent-skills --scope project`. ~200 skills: at user scope they push other skills' descriptions out of the listing Claude sees |
+
+## Updating
+
+Third-party marketplaces don't auto-update by default. Re-running `setup-machine.ps1` updates all
+marketplaces and plugins; for a quick update run `claude plugin marketplace update`, then
+`claude plugin update <plugin>@<marketplace>` (e.g. `noobit@noobit`), and `/reload-plugins` in open
+sessions. The noobit plugin also checks once a day at startup and says when it is outdated.
 
 ## 3. Global agent skills (skills.sh CLI, `~/.agents/skills`, symlinked into `~/.claude/skills`)
 
@@ -64,11 +71,14 @@ Managed with `npx skills` (check updates: `npx skills check`, update: `npx skill
 `~/.claude/CLAUDE.md` = repo root `CLAUDE.md.example` plus a line preferring the
 `microsoftdocs` MCP tools for MS docs, and — when `-AdoOrg` is given — a line
 pointing Azure DevOps work at the `ado` MCP server. The setup script creates it
-from the example if missing.
+from the example if missing; on later runs it only adds a missing `ado` line. After plugin
+updates, diff it against `CLAUDE.md.example` and merge new conventions by hand.
 
 ## Prerequisites on a new machine
 
 - Claude Code CLI installed and logged in
+- PowerShell 7+ (`pwsh`) — the setup script and the noobit hooks need it
+- .NET SDK 10+ — the noobit format hook and every .NET project
 - Node.js (for `npx skills` and the `ado` MCP server)
 - git
 - Azure CLI + `az login` (for the `ado` MCP server)

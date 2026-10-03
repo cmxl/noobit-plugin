@@ -18,40 +18,11 @@ Verified against official documentation, October 2026 (learn.microsoft.com EF Co
 
 `Database.GetDbConnection()` returns the ADO.NET `DbConnection` EF uses; `IDbContextTransaction.GetDbTransaction()` returns the underlying `DbTransaction` — both are the documented interop surface (EF "Transactions" page, cross-context and external-`DbTransaction` sections). Ownership rule from the API docs: **do not dispose the connection if EF created it** (i.e. you passed a connection string to `UseSqlServer`/`UseNpgsql`); if you passed a `DbConnection` in, disposing it is your job. Inside `BeginTransactionAsync` the connection is open for the transaction's lifetime; outside a transaction, bracket Dapper calls with `Database.OpenConnectionAsync(ct)` / `CloseConnectionAsync()` so EF's open/close bookkeeping stays consistent.
 
-With `EnableRetryOnFailure`, `BeginTransactionAsync` outside the strategy throws `InvalidOperationException: The configured execution strategy '...RetryingExecutionStrategy' does not support user-initiated transactions. Use the execution strategy returned by 'DbContext.Database.CreateExecutionStrategy()' ...` — the delegate is the retriable unit and must be re-runnable from the top (no captured dirty state). Two consequences: `Add` the entity *before* the strategy, and save with `acceptAllChangesOnSuccess: false` + `AcceptAllChanges()` after the strategy returns — a plain `SaveChangesAsync` marks entities `Unchanged` on success, so if the commit then fails transiently the replay saves nothing (or, if you re-`Add` inside the delegate, inserts twice):
+With `EnableRetryOnFailure`, `BeginTransactionAsync` outside the strategy throws `InvalidOperationException: The configured execution strategy '...RetryingExecutionStrategy' does not support user-initiated transactions. Use the execution strategy returned by 'DbContext.Database.CreateExecutionStrategy()' ...` — the delegate is the retriable unit and must be re-runnable from the top (no captured dirty state). Two consequences: `Add` the entity *before* the strategy, and save with `acceptAllChangesOnSuccess: false` + `AcceptAllChanges()` after the strategy returns — a plain `SaveChangesAsync` marks entities `Unchanged` on success, so if the commit then fails transiently the replay saves nothing (or, if you re-`Add` inside the delegate, inserts twice).
 
-```csharp
-public sealed class OrderService(AppDbContext db)
-{
-    public async Task PlaceAsync(Order order, CancellationToken ct)
-    {
-        db.Orders.Add(order);                                     // once, outside the retriable unit
-        var strategy = db.Database.CreateExecutionStrategy();
-        // Overload: ExecuteAsync<TState>(TState, Func<TState, CancellationToken, Task>, CancellationToken)
-        // — pass ct as the LAST argument so the strategy itself observes cancellation between retries.
-        await strategy.ExecuteAsync((db, order), static async (state, token) =>
-        {
-            var (db, order) = state;
-            await using var tx = await db.Database.BeginTransactionAsync(token);
+The canonical sample (`OrderService.PlaceAsync`: `Add` outside, `ExecuteAsync(state, static (s, token) => …, ct)`, EF's connection + transaction for the Dapper outbox insert, static `Serialize`) is in SKILL.md → "EF Core + Dapper together — the seam". The overload used there is `ExecuteAsync<TState>(TState, Func<TState, CancellationToken, Task>, CancellationToken)` — `ct` as the **last** argument, so the strategy itself observes cancellation between retries. A `static` lambda can't capture, which is why the state is a tuple and every helper it calls (`Serialize`) must be `static` too.
 
-            await db.SaveChangesAsync(acceptAllChangesOnSuccess: false, token);   // state stays replayable
-
-            var conn = db.Database.GetDbConnection();            // EF's connection — do not dispose
-            await conn.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO outbox_messages (id, type, payload) VALUES (@Id, @Type, @Payload)",
-                new { order.Id, Type = "order.created", Payload = Serialize(order) },
-                transaction: tx.GetDbTransaction(),              // EF's transaction
-                cancellationToken: token));
-
-            await tx.CommitAsync(token);
-        }, ct);
-
-        db.ChangeTracker.AcceptAllChanges();                      // only after a successful commit
-    }
-}
-```
-
-**Commit outcome unknown.** If the connection drops *during* `Commit`, the transaction may or may not have committed; the strategy retries as if it rolled back. The resiliency docs' options: (1) accept the rare failure but use **client-generated keys** (`Guid.CreateVersion7()`) so the replay throws a key violation instead of inserting a duplicate row; (2) state verification via `ExecuteInTransactionAsync` — EF begins/commits the transaction and calls `verifySucceeded` only when the commit fails transiently:
+**Commit outcome unknown.** If the connection drops *during* `Commit`, the transaction may or may not have committed; the strategy retries as if it rolled back. The resiliency docs' options: (1) accept the rare failure but use **client-generated keys**, assigned before the strategy runs, so the replay throws a key violation instead of inserting a duplicate row — `Guid.CreateVersion7()` on PostgreSQL/SQLite; on SQL Server EF's default `SequentialGuidValueGenerator` (generated client-side when the entity is tracked as `Added`), never UUIDv7, which fragments `uniqueidentifier` clustered keys (`mssql`); (2) state verification via `ExecuteInTransactionAsync` — EF begins/commits the transaction and calls `verifySucceeded` only when the commit fails transiently:
 
 ```csharp
 db.Orders.Add(order);
@@ -84,7 +55,7 @@ Sharing EF's connection for in-transaction Dapper work isn't just about atomicit
 
 ```csharp
 builder.Services.AddNpgsqlDataSource(cs, ds => ds.EnableDynamicJson());   // Npgsql.DependencyInjection: singleton data source
-builder.Services.AddDbContextPool<AppDbContext>((sp, o) => o
+builder.Services.AddPooledDbContextFactory<AppDbContext>((sp, o) => o   // the canonical registration (SKILL.md)
     .UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>(), npgsql => npgsql.EnableRetryOnFailure())
     .UseSnakeCaseNamingConvention());              // EFCore.NamingConventions package
 DefaultTypeMap.MatchNamesWithUnderscores = true;   // once at startup
@@ -201,7 +172,7 @@ foreach (var row in rows)
 tx.Commit();
 ```
 
-**Medium batches (any provider)** — EF `AddRange` + one `SaveChangesAsync` is fine into the low thousands: EF batches all pending changes into minimal roundtrips. Batch size is provider-tuned — SQL Server defaults to at most **42 statements per batch** (measured optimum; batching is skipped below 4 statements) — and adjustable via `MinBatchSize`/`MaxBatchSize` on the provider options; benchmark before changing. `ExecuteUpdateAsync`/`ExecuteDeleteAsync` are the set-based escape hatch: per the docs they "are completely unaware of EF's change tracker", execute immediately, don't batch with each other, and start **no implicit transaction** — wrap multiple calls (or mixes with `SaveChanges`) in an explicit transaction, and expect stale tracked entities afterwards.
+**Medium batches (any provider)** — EF `AddRange` + one `SaveChangesAsync` is fine into the low thousands: EF batches all pending changes into minimal roundtrips. Batch size is provider-tuned — SQL Server defaults to at most **42 statements per batch** (measured optimum; batching is skipped below 4 statements) — and adjustable via `MinBatchSize`/`MaxBatchSize` on the provider options; benchmark before changing. `ExecuteUpdateAsync`/`ExecuteDeleteAsync` are the set-based escape hatch: per the docs they "are completely unaware of EF's change tracker", execute immediately, don't batch with each other, and EF starts **no transaction** for them — each statement commits on its own ("each execute within their own transaction", i.e. the database's autocommit), so a failure leaves the earlier calls applied; wrap multiple calls (or mixes with `SaveChanges`) in an explicit transaction, and expect stale tracked entities afterwards.
 
 ### 7. Keeping Dapper SQL in sync with EF migrations
 
@@ -220,7 +191,7 @@ The schema is EF's; Dapper strings can't be compile-checked. Enforce with proces
 - Retry-enabled context for streaming endpoints — retries buffer the entire resultset.
 - Returning a lazy `buffered: false` / `QueryUnbufferedAsync` sequence after the connection is disposed.
 - Plain `string` Dapper parameters against `varchar` columns on MSSQL — implicit `nvarchar` conversion flips seeks to scans; use `DbString { IsAnsi = true }`.
-- `ExecuteUpdate`/`ExecuteDelete` sequences without an explicit transaction when they must be atomic — each runs in its own implicit transaction.
+- `ExecuteUpdate`/`ExecuteDelete` sequences without an explicit transaction when they must be atomic — EF opens no transaction, each statement commits on its own, so a later failure leaves earlier ones applied.
 - Bulk loads via row-by-row `INSERT` or per-row `SaveChanges` — use `SqlBulkCopy` / binary COPY / SQLite single-transaction pattern.
 - Many near-identical connection strings (per user, per database) — pool fragmentation; one canonical string per role.
 - MSSQL connection string without an explicit `Application Name` under EF 10 — EF's rewritten copy and Dapper's original are two pools (distributed-transaction escalation inside `TransactionScope`).
