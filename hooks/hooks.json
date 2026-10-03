@@ -1,27 +1,73 @@
 {
+  "description": "noobit quality automation: track and auto-format edited source files, block banned packages, remind about quality gates on stop, flag an outdated install at startup",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          { "type": "command", "timeout": 10, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.ps1"] }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "if": "Bash(dotnet add *)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "Bash(dotnet package add *)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "PowerShell(dotnet add *)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "PowerShell(dotnet package add *)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "Bash(dotnet.exe add *)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "Bash(dotnet.exe package add *)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "PowerShell(dotnet.exe add *)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "PowerShell(dotnet.exe package add *)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "if": "Write(*.csproj)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "Edit(*.csproj)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "Write(*.props)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "Edit(*.props)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "Write(*.targets)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] },
+          { "type": "command", "if": "Edit(*.targets)", "timeout": 15, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/guard-packages.ps1"] }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
         "hooks": [
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File \"${CLAUDE_PLUGIN_ROOT}/hooks/format-file.ps1\"",
-            "timeout": 60,
-            "statusMessage": "Auto-formatting file..."
-          }
+          { "type": "command", "if": "Write(*.cs)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.cs)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.ts)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.ts)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.html)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.html)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.scss)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.scss)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.css)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.css)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.js)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.js)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.mjs)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.mjs)", "timeout": 20, "statusMessage": "Formatting...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.csproj)", "timeout": 20, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.csproj)", "timeout": 20, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.props)", "timeout": 20, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.props)", "timeout": 20, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.razor)", "timeout": 20, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.razor)", "timeout": 20, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Write(*.cshtml)", "timeout": 20, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] },
+          { "type": "command", "if": "Edit(*.cshtml)", "timeout": 20, "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.ps1"] }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-quality-gate.ps1\"",
-            "timeout": 30,
-            "statusMessage": "Checking quality gates..."
-          }
+          { "type": "command", "timeout": 30, "statusMessage": "Checking quality gates...", "command": "pwsh", "args": ["-NoProfile", "-NonInteractive", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/stop-quality-gate.ps1"] }
         ]
       }
     ]

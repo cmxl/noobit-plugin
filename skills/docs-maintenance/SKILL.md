@@ -29,7 +29,7 @@ docs/
 
 ADRs and RFCs are **not** written by hand under this skill: their format, file naming
 (`YYYY-MM-DD-kebab-title.md`, no numbers), status lifecycle and generated `index.md` belong to the
-`adr` and `rfc` skills (authored via `/noobit:adr` / `/noobit:rfc`, tech-lead agent).
+`adr` and `rfc` skills (authored via `/noobit:new-adr` / `/noobit:new-rfc`, tech-lead agent).
 
 Scale down for small projects (README.md + architecture.md minimum) — but the index rule always holds.
 
@@ -86,10 +86,10 @@ Every diagram gets `accTitle` + `accDescr` (screen readers). Keep diagrams small
 | Schema change | `data-model.md` ER diagram |
 | Auth/cookie/header change | `security.md` |
 | New env var / config key | `deployment.md`, `getting-started.md` |
-| Significant tech choice | new ADR via `/noobit:adr` (tech-lead agent) |
-| Up-front design for a large change | RFC via `/noobit:rfc` |
+| Significant tech choice | new ADR via `/noobit:new-adr` (tech-lead agent) |
+| Up-front design for a large change | RFC via `/noobit:new-rfc` |
 
-The `docs-maintainer` agent / `/docs-sync` command automates this: it diffs the working tree, maps changes through this table, and updates the affected files + index + back-links.
+The `docs-maintainer` agent / `/noobit:docs-sync` command automates this: it diffs the working tree, maps changes through this table, and updates the affected files + index + back-links.
 
 ## Common mistakes
 
@@ -102,7 +102,7 @@ The `docs-maintainer` agent / `/docs-sync` command automates this: it diffs the 
 | ASCII-art / image-file diagrams | Mermaid in the markdown |
 | Restating code line-by-line | Document intent, flows, and decisions — not syntax |
 | Editing accepted ADRs | New ADR that supersedes it (`noobit:adr` — only the old record's status line changes) |
-| Hand-written, numbered ADRs (`0001-…`) | `/noobit:adr` — date-named records + generated index |
+| Hand-written, numbered ADRs (`0001-…`) | `/noobit:new-adr` — date-named records + generated index |
 
 ## Reference
 

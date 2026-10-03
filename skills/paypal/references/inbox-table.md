@@ -60,6 +60,12 @@ CREATE NONCLUSTERED INDEX ix_webhook_inbox_tenant
     ON dbo.webhook_inbox (tenant_id, received_at) WHERE tenant_id IS NOT NULL;
 ```
 
+**Deliberate deviations from `noobit:data-access` / the RabbitMQ inbox:** snake_case on SQL Server too
+(the default there is PascalCase) because this one schema is meant to run unchanged on SQL Server and
+PostgreSQL; follow your database's existing convention if it already has one. Timestamps come from the
+application clock, never `DEFAULT SYSUTCDATETIME()` (which the outbox in `noobit:rabbitmq-messaging` uses):
+the claim/lease queries compare against `@now` from the same clock, and mixing DB and app clocks skews leases.
+
 Filtered indexes require `SET QUOTED_IDENTIFIER ON` (the default for SSMS, sqlpackage/DACPAC and
 ADO.NET; plain `sqlcmd` needs `-I`) — otherwise index creation and inserts fail with error 1934.
 
@@ -71,7 +77,7 @@ ADO.NET; plain `sqlcmd` needs `-I`) — otherwise index creation and inserts fai
 | 1 | Processing | Claimed by a worker until `locked_until` |
 | 2 | Processed | Booked (or confirmed already booked) |
 | 3 | Failed | Transient error; retry at `next_attempt_at` (exponential backoff) |
-| 4 | DeadLetter | Max attempts reached — alert, human looks |
+| 4 | DeadLetter | Max attempts reached — alert, human looks (if still unverified, a later delivery of the same event id replaces it) |
 | 5 | Ignored | Event type you deliberately don't handle |
 | 6 | Unmatched | No tenant/order found — alert, keep for a human; **never delete** |
 | 7 | Rejected | Signature invalid — alert; never booked |
@@ -97,10 +103,12 @@ concurrency). Partial indexes use the same `WHERE` clauses.
 
 ## Receiving (insert)
 
-Plain `INSERT`; catch the unique violation (SQL Server 2601/2627, PostgreSQL `23505`) and return `200`.
+Plain `INSERT`; catch the unique violation (SQL Server 2601/2627, PostgreSQL `23505`). The stored row
+decides the answer: verified (`signature_status = 1`) → `200`; `Rejected`, or `DeadLetter` while still
+unverified → replace it with this delivery and `200`; unverified and still in flight → `503` (PayPal
+retries). The duplicate's event id is unverified input, so it can never just be dropped.
 This is race-free under concurrent duplicate deliveries — a "check, then insert" isn't. Any other
 error → `5xx` so PayPal retries. Endpoint code: [webhooks.md](webhooks.md#4-receiving-endpoint-aspnet-core-minimal-api).
-
 
 **The envelope columns (`dedup_key`, `event_type`, `resource_id`) come from an unverified body.** They
 exist for dedup and support lookups only; the processor re-reads everything from the verified body.
@@ -110,7 +118,9 @@ exist for dedup and support lookups only; the processor re-reads everything from
 Constants: `@max_attempts` (e.g. 10); lease length longer than worst-case processing of one row —
 e.g. 5 minutes when a row makes two PayPal calls with a 30 s total timeout each.
 
-SQL Server — first park poison rows (a row whose worker crashed or hung on every attempt), then claim:
+SQL Server — first park poison rows (a row whose worker crashed or hung on every attempt), then claim.
+A poison row parked before verification keeps `signature_status = 0`; the receiving endpoint treats it like
+`Rejected`, so a genuine retry isn't 503'd forever:
 
 ```sql
 UPDATE dbo.webhook_inbox
@@ -173,11 +183,12 @@ catches anything the queue loses.
 1. **Verify the signature** from raw `headers` + raw `body` — nothing in the body is trusted before this.
    Record `signature_status` (1 valid / 2 invalid — the receiving endpoint's duplicate handling reads it).
    Missing headers, body that isn't a JSON object, or a bad signature → `Rejected`.
-   - *One app for everyone:* use the environment's `webhook_id`.
+   - *One app for everyone:* use `PayPalOptions.WebhookId` (config `PayPal:WebhookId`) — sandbox and live deployments each configure their own.
    - *One app per tenant:* resolve the tenant **only** from `request_path` (URL key) to pick its
      `webhook_id`; unknown key → `Rejected`.
 2. **Parse** the verified body. Event types you don't handle → `Ignored`.
-3. **Resolve the order** through your mapping table (below). Not found → `Unmatched`.
+3. **Resolve the order** through your mapping table (below), keyed on the row's `environment` + order id.
+   Not found → `Unmatched`.
 4. **Act on current PayPal state** (with that tenant's/environment's credentials). Route on the
    envelope's **`resource_type`**, not on an event-name prefix — `PAYMENT.CAPTURE.REFUNDED` carries a
    *refund* (see [webhooks.md](webhooks.md#2-pick-event-types-orders-v2-checkout)), and its id sent to
@@ -203,34 +214,45 @@ The order mapping is written **before** the create-order response goes back to t
 payment and refund tables are written by the booking routine. Put them where the business data lives.
 
 ```sql
+-- environment is part of every key: sandbox and live ids live in separate namespaces (core rule 11)
 CREATE TABLE dbo.paypal_order (
-    paypal_order_id   VARCHAR (36)       NOT NULL CONSTRAINT pk_paypal_order PRIMARY KEY,
-    environment       VARCHAR (10)       NOT NULL,
+    environment       VARCHAR (10)       NOT NULL,  -- sandbox | live
+    paypal_order_id   VARCHAR (36)       NOT NULL,
     tenant_id         INT                NOT NULL,
     checkout_ref      VARCHAR (100)      NOT NULL,  -- your frozen checkout/basket snapshot, not a mutable cart
     expected_amount   DECIMAL (19, 4)    NOT NULL,
     currency          CHAR (3)           NOT NULL,
-    created_at        DATETIMEOFFSET (7) NOT NULL
+    payee_merchant_id VARCHAR (32)       NOT NULL,  -- PayPalOptions.MerchantId (or the tenant's) for this environment; checked on booking
+    created_at        DATETIMEOFFSET (7) NOT NULL,
+    CONSTRAINT pk_paypal_order PRIMARY KEY (environment, paypal_order_id)
 );
 
 CREATE TABLE dbo.paypal_capture (
-    capture_id        VARCHAR (36)       NOT NULL CONSTRAINT pk_paypal_capture PRIMARY KEY,
-    paypal_order_id   VARCHAR (36)       NOT NULL CONSTRAINT fk_paypal_capture_order REFERENCES dbo.paypal_order,
+    environment       VARCHAR (10)       NOT NULL,
+    capture_id        VARCHAR (36)       NOT NULL,
+    paypal_order_id   VARCHAR (36)       NOT NULL,
     amount            DECIMAL (19, 4)    NOT NULL,
     currency          CHAR (3)           NOT NULL,
     status            VARCHAR (20)       NOT NULL,  -- PENDING, COMPLETED, PARTIALLY_REFUNDED, REFUNDED, DECLINED, FAILED
     status_rank       TINYINT            NOT NULL,  -- forward-only ordering, see below
     reversed          BIT                NOT NULL CONSTRAINT df_paypal_capture_reversed DEFAULT (0),
-    updated_at        DATETIMEOFFSET (7) NOT NULL
+    updated_at        DATETIMEOFFSET (7) NOT NULL,
+    CONSTRAINT pk_paypal_capture PRIMARY KEY (environment, capture_id),
+    CONSTRAINT fk_paypal_capture_order FOREIGN KEY (environment, paypal_order_id)
+        REFERENCES dbo.paypal_order (environment, paypal_order_id)
 );
 
 CREATE TABLE dbo.paypal_refund (
-    refund_id         VARCHAR (36)       NOT NULL CONSTRAINT pk_paypal_refund PRIMARY KEY,
-    capture_id        VARCHAR (36)       NOT NULL CONSTRAINT fk_paypal_refund_capture REFERENCES dbo.paypal_capture,
+    environment       VARCHAR (10)       NOT NULL,
+    refund_id         VARCHAR (36)       NOT NULL,
+    capture_id        VARCHAR (36)       NOT NULL,
     amount            DECIMAL (19, 4)    NOT NULL,
     currency          CHAR (3)           NOT NULL,
     status            VARCHAR (20)       NOT NULL,  -- PENDING, COMPLETED, FAILED, CANCELLED
-    updated_at        DATETIMEOFFSET (7) NOT NULL
+    updated_at        DATETIMEOFFSET (7) NOT NULL,
+    CONSTRAINT pk_paypal_refund PRIMARY KEY (environment, refund_id),
+    CONSTRAINT fk_paypal_refund_capture FOREIGN KEY (environment, capture_id)
+        REFERENCES dbo.paypal_capture (environment, capture_id)
 );
 ```
 
@@ -258,26 +280,48 @@ Rules:
 
 1. **Check the money for every rank 2–4:** the capture's `amount.value` + `currency_code` ("the amount
    for this captured payment") must equal `paypal_order.expected_amount` + `currency`, and the
-   capture's payee must be your merchant account — `payee.merchant_id` of the re-fetched capture
+   capture's payee must be your merchant account (`paypal_order.payee_merchant_id`) —
+   `payee.merchant_id` of the re-fetched capture
    (`GET /v2/payments/captures/{id}`); on the synchronous path, the captured order's
-   `purchase_units[].payee.merchant_id`. Mismatch → don't book; `Unmatched` + alert (someone paid a
-   different amount, or the order isn't yours).
-2. **Upsert forward-only**, in one transaction with the business effect; `OUTPUT` returns the rank the
-   row had before:
+   `purchase_units[].payee.merchant_id`. Compare the amount as a number, never as a string:
+   `decimal.Parse(capture.Amount.Value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture) == mapping.ExpectedAmount`
+   ("10.0" vs "10.00" is the same money; `decimal` equality ignores scale). Mismatch → don't book; `Unmatched` + alert
+   (someone paid a different amount, or the order isn't yours).
+2. **Upsert forward-only**, in one transaction with the business effect; the statement returns the rank
+   the row had before:
 
    ```sql
+   -- SQL Server: OUTPUT deleted.*
    UPDATE dbo.paypal_capture
    SET    status = @status, status_rank = @rank, updated_at = @now
    OUTPUT deleted.status_rank AS previous_rank
-   WHERE  capture_id = @capture_id AND status_rank < @rank
+   WHERE  environment = @environment AND capture_id = @capture_id AND status_rank < @rank
      AND  (@rank <> 9 OR status_rank <= 1);   -- a late DECLINED/FAILED never overwrites a paid/refunded capture
+   ```
+
+   ```sql
+   -- PostgreSQL 18+: RETURNING OLD.*
+   UPDATE paypal_capture
+   SET    status = @status, status_rank = @rank, updated_at = @now
+   WHERE  environment = @environment AND capture_id = @capture_id AND status_rank < @rank
+     AND  (@rank <> 9 OR status_rank <= 1)
+   RETURNING OLD.status_rank AS previous_rank;
+
+   -- PostgreSQL <= 17 (no OLD in RETURNING): read the old row locked, in the same statement
+   UPDATE paypal_capture c
+   SET    status = @status, status_rank = @rank, updated_at = @now
+   FROM   (SELECT environment, capture_id, status_rank FROM paypal_capture
+           WHERE environment = @environment AND capture_id = @capture_id FOR UPDATE) prev
+   WHERE  c.environment = prev.environment AND c.capture_id = prev.capture_id
+     AND  c.status_rank < @rank AND (@rank <> 9 OR c.status_rank <= 1)
+   RETURNING prev.status_rank AS previous_rank;
    ```
 
    No row returned: the row doesn't exist → insert it (previous rank = 0; a unique-key race on insert →
    re-run the update), or it is already at the same or a newer state → no-op. **Mark paid when
    `previous_rank < 2` and the new rank is 2–4.** Business effects run only in the transaction that
    moved the rank.
-3. **Refunds** upsert into `paypal_refund` keyed on `refund_id`; derive `PARTIALLY_REFUNDED`/`REFUNDED`
+3. **Refunds** upsert into `paypal_refund` keyed on (`environment`, `refund_id`); derive `PARTIALLY_REFUNDED`/`REFUNDED`
    from the re-fetched capture.
 4. **Reversals** (`PAYMENT.CAPTURE.REVERSED`, chargebacks) set `reversed = 1` on the capture and alert —
    money that was paid is gone; a human decides what happens to the purchase.

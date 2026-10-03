@@ -3,16 +3,12 @@
 How to make an app feel native in Discord, with verified Discord.Net 3.20.1 code. All builders here are pure
 functions in the shared library: unit-testable, reused by gateway and HTTP modules.
 
-## Contents
-1. Design principles
-2. Components V2 cards (about, search results with pagination, announcement)
-3. Custom ids
-4. Modals
-5. Autocomplete
-6. Context-menu commands & profile card
-7. Embeds, polls, selects, premium, emojis (showcase module)
-8. Ephemeral vs public, editing, timestamps, mentions
-9. Localization
+Code blocks omit `using` directives (add the System.*, Discord.*, Microsoft.Extensions.* and `MyApp.*` namespaces the
+types come from); the file-scoped namespace shows which project a file belongs to.
+
+**Contents:** 1 Design principles · 2 Components V2 cards (about, search results with pagination, announcement) ·
+3 Custom ids · 4 Modals · 5 Autocomplete · 6 Context-menu commands & profile card · 7 Embeds, polls, selects,
+premium, emojis · 8 Ephemeral vs public, editing, timestamps, mentions · 9 Localization
 
 ## 1. Design principles
 
@@ -49,23 +45,17 @@ functions in the shared library: unit-testable, reused by gateway and HTTP modul
 `Brand.cs`
 
 ```csharp
-using Discord;
-
 namespace MyApp.Discord.Cards;
 
 public static class Brand
 {
-    public static readonly Color Accent = new(0x58, 0x65, 0xF2);   // blurple
-    public static readonly Color Success = new(0x57, 0xF2, 0x87);
-    public static readonly Color Danger = new(0xED, 0x42, 0x45);
+    public static readonly Color Accent = new(0x58, 0x65, 0xF2), Success = new(0x57, 0xF2, 0x87), Danger = new(0xED, 0x42, 0x45);
 }
 ```
 
 `AboutCard.cs`
 
 ```csharp
-using Discord;
-
 namespace MyApp.Discord.Cards;
 
 public static class AboutCard
@@ -91,16 +81,12 @@ Paginated search results — each hit is a Section with a Link-button accessory;
 `SearchCard.cs`
 
 ```csharp
-using Discord;
-using MyApp.Discord.Search;
-
 namespace MyApp.Discord.Cards;
 
 public static class SearchCard
 {
     public const int PageSize = 5;
 
-    /// <summary>One page of results as a Components V2 message (Container + Sections + nav row).</summary>
     public static MessageComponent Build(string query, IReadOnlyList<DocHit> hits, int page)
     {
         var pageCount = Math.Max(1, (int)Math.Ceiling(hits.Count / (double)PageSize));
@@ -163,9 +149,6 @@ Announcement card — interactive variant for bot posts, link-only variant for w
 `AnnouncementCard.cs`
 
 ```csharp
-using Discord;
-using MyApp.Discord.Announcements;
-
 namespace MyApp.Discord.Cards;
 
 public static class AnnouncementCard
@@ -228,10 +211,7 @@ Sending V2:
 ```csharp
 namespace MyApp.Discord.Cards;
 
-/// <summary>
-/// Single source of truth for custom ids. Format: <c>feature:action:arg1:arg2</c>, ≤ 100 chars.
-/// Handlers bind the same patterns with <c>*</c> wildcards, so a typo here is caught by the routing test.
-/// </summary>
+/// <summary>Single source of truth; handlers bind the same patterns with <c>*</c> wildcards (routing test catches typos).</summary>
 public static class CustomIds
 {
     public const int MaxLength = 100;
@@ -266,12 +246,8 @@ Declare the modal as an `IModal` class — Discord.Net produces the current Labe
 `FeedbackModal.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-
 namespace MyApp.Discord.Modals;
 
-/// <summary>Modal declared as a class; Discord.Net builds the Label-wrapped components (ActionRow+TextInput is deprecated).</summary>
 public sealed class FeedbackModal : IModal
 {
     public string Title => "Send feedback";
@@ -300,9 +276,6 @@ as the first response; `[ModalInteraction(id)]` receives the bound class.
 `FeedbackCard.cs`
 
 ```csharp
-using Discord;
-using MyApp.Discord.Modals;
-
 namespace MyApp.Discord.Cards;
 
 public static class FeedbackCard
@@ -337,18 +310,9 @@ Modal facts:
 `DocsAutocomplete.cs`
 
 ```csharp
-using Discord;
-using Discord.Interactions;
-using Microsoft.Extensions.DependencyInjection;
-
 namespace MyApp.Discord.Search;
 
-/// <summary>
-/// Autocomplete cannot be deferred: answer from fast data (cache/in-memory/indexed query) within 3 s, ≤ 25 choices.
-/// Lives in the shared library — the same handler serves gateway and HTTP interactions.
-/// The Interaction Framework creates ONE instance per handler type and caches it (effectively a singleton), so it
-/// takes no constructor dependencies: services come from the per-execution scope passed in as <c>services</c>.
-/// </summary>
+/// <summary>Shared by gateway and HTTP modules. Cached singleton: no constructor dependencies (see below).</summary>
 public sealed class DocsAutocomplete : AutocompleteHandler
 {
     public override Task<AutocompletionResult> GenerateSuggestionsAsync(
@@ -385,38 +349,12 @@ public interface IDocsSearch
     /// <summary>Potentially slow full search (DB, HTTP) — callers defer the interaction first.</summary>
     Task<IReadOnlyList<DocHit>> SearchAsync(string query, CancellationToken ct);
 }
-
-/// <summary>Sample implementation; swap for EF Core / a search index in a real app.</summary>
-public sealed class InMemoryDocsSearch : IDocsSearch
-{
-    private static readonly DocHit[] Docs =
-    [
-        .. Enumerable.Range(1, 23).Select(i => new DocHit(
-            $"Getting started part {i}", $"https://example.com/docs/start-{i}", $"Step {i} of the getting-started guide.")),
-        new("Gateway intents", "https://example.com/docs/intents", "Which intents the bot requests and why."),
-        new("Slash commands", "https://example.com/docs/commands", "Command reference."),
-    ];
-
-    public IReadOnlyList<string> Suggest(string prefix, int max) =>
-        Docs.Select(d => d.Title)
-            .Where(t => t.Contains(prefix, StringComparison.OrdinalIgnoreCase))
-            .Take(max)
-            .ToArray();
-
-    public async Task<IReadOnlyList<DocHit>> SearchAsync(string query, CancellationToken ct)
-    {
-        await Task.Delay(TimeSpan.FromMilliseconds(200), ct); // stands in for real I/O
-        return Docs.Where(d => d.Title.Contains(query, StringComparison.OrdinalIgnoreCase)
-                            || d.Snippet.Contains(query, StringComparison.OrdinalIgnoreCase))
-                   .ToArray();
-    }
-}
 ```
 
 ## 6. Context-menu commands & profile card
 
 ```csharp
-// excerpt — GeneralModule in gateway-bot.md §6; the message command was compile-checked separately
+// excerpt — add to GeneralModule (gateway-bot.md §6); the message command appears only here
 [UserCommand("Show profile")]   // right-click user → Apps → Show profile
 public Task ProfileAsync(IUser user) =>
     RespondAsync(components: ProfileCard.Build(user), ephemeral: true, allowedMentions: AllowedMentions.None);
@@ -429,8 +367,6 @@ public Task SummarizeAsync(IMessage message) =>
 `ProfileCard.cs`
 
 ```csharp
-using Discord;
-
 namespace MyApp.Discord.Cards;
 
 public static class ProfileCard
@@ -450,110 +386,49 @@ public static class ProfileCard
 
 ## 7. Embeds, polls, selects, premium, emojis
 
-`ShowcaseModule.cs`
-
 ```csharp
-using Discord;
-using Discord.Interactions;
-using MyApp.Discord.Cards;
+// excerpt — smaller building blocks inside an InteractionModuleBase<SocketInteractionContext>
+// Classic embed: still right for `content` + card together, link-preview style output, CI-style status.
+var embed = new EmbedBuilder()
+    .WithTitle("Deployment finished").WithUrl("https://example.com/deployments/42")
+    .WithDescription("Version **2.4.1** is live.")
+    .AddField("Duration", "3m 12s", inline: true)
+    .WithColor(Brand.Success).WithCurrentTimestamp()
+    .Build(); // throws if limits are exceeded (title 256, description 4096, 25 fields, 6000 total)
+await RespondAsync("Heads up:", embed: embed, allowedMentions: AllowedMentions.None);
 
-namespace MyApp.Bot.Modules;
-
-/// <summary>Smaller building blocks: classic embed, poll, select menus, premium gating, application emojis.</summary>
-[Group("demo", "Showcase of message features")]
-[CommandContextType(InteractionContextType.Guild)]
-[IntegrationType(ApplicationIntegrationType.GuildInstall)]
-public sealed class ShowcaseModule : InteractionModuleBase<SocketInteractionContext>
+// Native poll: Discord renders voting and results. Not combinable with Components V2.
+await RespondAsync(poll: new PollProperties
 {
-    private const ulong PremiumSkuId = 1234567890123456789; // Developer Portal → Monetization → SKUs
+    Question = new PollMediaProperties { Text = question },
+    Answers = [new PollMediaProperties { Text = "Yes" }, new PollMediaProperties { Text = "No" }],
+    Duration = 24, // hours, max 768 (32 days)
+});
 
-    // Classic embed: still right when you need `content` + card together, link-preview style output, or polls next to it.
-    [SlashCommand("embed", "Classic embed")]
-    public Task EmbedAsync()
-    {
-        var embed = new EmbedBuilder()
-            .WithAuthor(Context.User.GlobalName ?? Context.User.Username, Context.User.GetDisplayAvatarUrl())
-            .WithTitle("Deployment finished")
-            .WithUrl("https://example.com/deployments/42")
-            .WithDescription("Version **2.4.1** is live.")
-            .AddField("Duration", "3m 12s", inline: true)
-            .AddField("Commit", "`a1b2c3d`", inline: true)
-            .WithColor(Brand.Success)
-            .WithFooter("CI")
-            .WithCurrentTimestamp()
-            .Build(); // throws if limits are exceeded (title 256, description 4096, 25 fields, 6000 total)
+// Selects: a string select with fixed options and an auto-populated channel select.
+var components = new ComponentBuilderV2()
+    .WithActionRow([new SelectMenuBuilder("settings:theme", placeholder: "Theme").AddOption("Light", "light").AddOption("Dark", "dark")])
+    .WithActionRow([new SelectMenuBuilder("settings:logchannel", placeholder: "Log channel", type: ComponentType.ChannelSelect)
+        .WithChannelTypes(ChannelType.Text)])
+    .Build();
 
-        return RespondAsync("Heads up:", embed: embed, allowedMentions: AllowedMentions.None);
-    }
+// Select handlers take the selected values as the LAST parameter; typed arrays for auto-populated selects.
+[ComponentInteraction("settings:logchannel")]
+public Task LogChannelAsync(IChannel[] channels) => RespondAsync($"Logging to <#{channels[0].Id}>.", ephemeral: true);
 
-    // Native poll: Discord renders voting and results. Not combinable with Components V2.
-    [SlashCommand("poll", "Ask the channel")]
-    public Task PollAsync([MaxLength(300)] string question) =>
-        RespondAsync(poll: new PollProperties
-        {
-            Question = new PollMediaProperties { Text = question },
-            Answers =
-            [
-                new PollMediaProperties { Text = "Yes", Emoji = new Emoji("👍") },
-                new PollMediaProperties { Text = "No", Emoji = new Emoji("👎") },
-            ],
-            Duration = 24,          // hours, max 768 (32 days)
-            AllowMultiselect = false,
-        });
-
-    // Select menus: string select with fixed options, and an auto-populated channel select.
-    [SlashCommand("settings", "Pick options")]
-    public Task SettingsAsync() =>
-        RespondAsync(ephemeral: true, components: new ComponentBuilderV2()
-            .WithTextDisplay("Choose a theme and a log channel:")
-            .WithActionRow([
-                new SelectMenuBuilder("demo:theme", placeholder: "Theme")
-                    .AddOption("Light", "light", emote: new Emoji("☀️"))
-                    .AddOption("Dark", "dark", emote: new Emoji("🌙")),
-            ])
-            .WithActionRow([
-                new SelectMenuBuilder("demo:logchannel", placeholder: "Log channel", type: ComponentType.ChannelSelect)
-                    .WithChannelTypes(ChannelType.Text),
-            ])
-            .Build());
-
-    // Select handlers take the selected values as the LAST parameter; typed arrays for auto-populated selects.
-    // Inside a [Group], custom ids are prefixed with the group name ("demo theme"); ignoreGroupNames opts out.
-    [ComponentInteraction("demo:theme", ignoreGroupNames: true)]
-    public Task ThemeAsync(string[] selected) =>
-        RespondAsync($"Theme set to **{selected[0]}**.", ephemeral: true);
-
-    [ComponentInteraction("demo:logchannel", ignoreGroupNames: true)]
-    public Task LogChannelAsync(IChannel[] channels) =>
-        RespondAsync($"Logging to <#{channels[0].Id}>.", ephemeral: true);
-
-    // Monetization: entitlements arrive on every interaction — gate cheaply, upsell with a Premium button (style 6).
-    [SlashCommand("pro", "A premium feature")]
-    public Task ProAsync()
-    {
-        if (Context.Interaction.Entitlements.Any(e => e.SkuId == PremiumSkuId))
-        {
-            return RespondAsync("✨ Premium feature unlocked.", ephemeral: true);
-        }
-
-        return RespondAsync(ephemeral: true, components: new ComponentBuilderV2()
-            .WithTextDisplay("This is a premium feature.")
-            // Not ButtonBuilder.CreatePremiumButton — in 3.20.1 it builds a Success-style button that fails validation.
-            // Premium buttons carry only the SKU: no label, emoji, url or custom_id; Discord renders name and price.
-            .WithActionRow([new ButtonBuilder(style: ButtonStyle.Premium, skuId: PremiumSkuId)])
-            .Build());
-    }
-
-    // Application emojis (Developer Portal → Emojis, up to 2000): usable everywhere, even by user-installed apps.
-    // Fetch once at startup and cache — don't call this per interaction.
-    [SlashCommand("emojis", "List application emojis")]
-    public async Task EmojisAsync()
-    {
-        var emotes = await Context.Client.GetApplicationEmotesAsync();
-        await RespondAsync(emotes.Count == 0 ? "No application emojis yet." : string.Join(" ", emotes.Select(e => e.ToString())),
-            ephemeral: true);
-    }
+// Monetization: entitlements arrive on every interaction — gate cheaply, upsell with a Premium button (style 6).
+// Premium buttons carry only the SKU: no label, emoji, url or custom_id; Discord renders name and price.
+// Build it with the constructor, never ButtonBuilder.CreatePremiumButton (SKILL.md "Common mistakes").
+if (!Context.Interaction.Entitlements.Any(e => e.SkuId == PremiumSkuId))
+{
+    await RespondAsync(ephemeral: true, components: new ComponentBuilderV2()
+        .WithTextDisplay("This is a premium feature.")
+        .WithActionRow([new ButtonBuilder(style: ButtonStyle.Premium, skuId: PremiumSkuId)])
+        .Build());
 }
+
+// Application emojis (Developer Portal → Emojis, up to 2000): usable everywhere, even by user-installed apps.
+// Fetch once at startup and cache (Context.Client.GetApplicationEmotesAsync()) — not per interaction.
 ```
 
 When to use which:

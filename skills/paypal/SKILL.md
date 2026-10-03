@@ -1,6 +1,6 @@
 ---
 name: paypal
-description: Use when integrating PayPal — adding PayPal buttons or card fields to a website (JS SDK v6/v5, paypal-js, react-paypal-js, Angular, createOrder/onApprove), Orders v2 checkout, capturing or refunding payments, PayPal webhooks (registering, receiving, verifying PAYPAL-TRANSMISSION-SIG signatures, event types like PAYMENT.CAPTURE.COMPLETED), storing webhook events in an inbox/staging table, reconciling PayPal transactions, PayPal sandbox or webhook simulator testing, or PayPalServerSDK questions. Also when a PayPal payment or webhook went missing, was booked twice, or failed verification.
+description: Use when integrating PayPal — website checkout (JS SDK v6/v5 buttons or card fields, createOrder/onApprove), Orders v2 create/capture/refund, PayPal webhooks (registration, PAYPAL-TRANSMISSION-SIG verification, PAYMENT.CAPTURE.* events, inbox table), reconciliation, sandbox/simulator testing, or PayPalServerSDK. Also when a PayPal payment or webhook went missing, was booked twice, or failed verification. Not for other payment providers (Stripe, Adyen, Mollie).
 ---
 
 # PayPal (REST APIs + webhooks)
@@ -39,8 +39,10 @@ The facts in this skill were verified against official docs and PayPal's OpenAPI
    re-serialized JSON fails. Never bind with `[FromBody]` before saving.
 4. **Return `2xx` only after the insert committed; `5xx` if it failed.** PayPal retries non-2xx up to
    25 times over 3 days — that is your safety net, so don't swallow storage errors.
-5. **Deduplicate on the event `id`** (`WH-…`) with a unique index (+ environment). A duplicate insert =
-   success, return `2xx`.
+5. **Deduplicate on the event `id`** (`WH-…`) with a unique index (+ environment). The id comes from an
+   unverified body, so a duplicate insert has three outcomes ([webhooks.md §4](references/webhooks.md#4-receiving-endpoint-aspnet-core-minimal-api)):
+   stored copy verified → `2xx`; stored copy still unverified and in flight → `503` (PayPal retries);
+   stored copy `Rejected` or parked unverified → replace it with this delivery and verify again.
 6. **Verify every event** (postback API or offline RSA/CRC32) in the processor, not at ingress, and
    **before reading anything from its body** — tenant lookups included. Failed verification or missing
    signature headers → status `Rejected`, never booked.
@@ -54,12 +56,12 @@ The facts in this skill were verified against official docs and PayPal's OpenAPI
    rank *crosses* `COMPLETED` (a capture first seen as `PARTIALLY_REFUNDED` was paid too), after checking
    captured amount + currency + payee against the values stored at order creation.
 9. **Your order mapping is the only proof of ownership.** The processor resolves an event through the
-   `paypal_order_id → tenant/checkout/expected amount` row your server wrote at order creation.
+   `(environment, paypal_order_id) → tenant/checkout/expected amount/payee` row your server wrote at order creation.
    `custom_id` is a cross-check, never a key. Not found → `Unmatched`, alert, keep the row.
 10. **Reconcile.** A scheduled job checks orders stuck in APPROVED/PENDING via the API and sweeps
    Transaction Search (data appears with up to 3 h delay) — webhooks are not guaranteed delivery.
 11. **Environments are separate worlds.** Sandbox and live have different base URLs, credentials,
-    and webhook ids. Store `environment` on every inbox row and in the dedup key.
+    webhook ids and merchant ids. Store `environment` on every inbox row, in the dedup key and in the order-mapping key.
 
 ## Quick reference
 

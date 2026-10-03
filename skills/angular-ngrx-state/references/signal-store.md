@@ -48,7 +48,8 @@ export const BookSearchStore = signalStore(
     booksCount: computed(() => books().length),
     sortedBooks: computed(() => {
       const dir = filter.order() === 'asc' ? 1 : -1;
-      return books().toSorted((a, b) => dir * a.title.localeCompare(b.title));
+      // copy before sort: `toSorted` is ES2023, but the Angular CLI tsconfig targets ES2022
+      return [...books()].sort((a, b) => dir * a.title.localeCompare(b.title));
     }),
   })),
   withMethods((store, booksService = inject(BooksService)) => ({
@@ -188,7 +189,7 @@ Four tools, in rough order of reach:
 
 4. **Angular `resource()` / `httpResource()`** — for declarative "fetch whenever this signal
    changes" reads, create the resource in `withProps` (an injection context) and derive from it.
-   `@ngrx/signals/resource` (experimental, v22) adds `extendResource` to keep the previous value
+   `@ngrx/signals/resource` (experimental) adds `extendResource` to keep the previous value
    while reloading or return a fallback instead of throwing on error:
 
    ```ts
@@ -280,7 +281,9 @@ export const setError = (error: string) => ({ requestStatus: { error } });
 **Requiring input** from the host store (type-checked — missing requirements = compile error):
 
 ```ts
-import { EntityState } from '@ngrx/signals/entities';
+import { computed } from '@angular/core';
+import { signalStoreFeature, type, withComputed, withState } from '@ngrx/signals';
+import { EntityId, EntityState } from '@ngrx/signals/entities';
 
 export function withSelectedEntity<Entity>() {
   return signalStoreFeature(
@@ -389,11 +392,22 @@ describe('CounterStore', () => {
 
 Mock injected deps with `{ provide: BooksService, useValue: {...} }`. For `rxMethod`/`signalMethod`,
 run in an injection context and await via `await expect.poll(() => store.x()).toBe(...)` or
-`TestBed.tick()`. To test a component, provide a plain object of signals + fns for the store.
+`TestBed.tick()`.
+
+Which layer mocks what (shared with `frontend-testing`):
+
+| Test | Store | Data service | HTTP |
+|---|---|---|---|
+| Store unit test (this section) | real | mocked (`useValue`) | none |
+| Presentational component | stub: plain object of signals + fns | — | none |
+| Component/integration (component + store + service) | real | real | `provideHttpClient()` + `provideHttpClientTesting()` → `HttpTestingController` |
+
+Never spy on or mock the store's own methods/internals in any of them.
 
 **Zoneless (default since Angular 21, also in `TestBed`):** `fakeAsync`/`tick`/`flush` need Zone.js;
-under Vitest they only work with `zone.js/plugins/vitest-patch` in the test polyfills — prefer native
-async and Vitest fake timers. Use `TestBed.tick()` / `await fixture.whenStable()` for effects and
+under Vitest they only work with `zone.js`, `zone.js/testing` and `zone.js/plugins/vitest-patch`
+(zone.js ≥ 0.16.2; resolved via the package `exports` map, not a physical `plugins/` folder) in the
+test polyfills — in zoneless tests prefer native `async`/`await` and `vi.useFakeTimers()`. Use `TestBed.tick()` / `await fixture.whenStable()` for effects and
 change detection, `expect.poll` for async results, and `vi.useFakeTimers()` +
 `vi.advanceTimersByTime()` for `debounceTime` in an `rxMethod`.
 

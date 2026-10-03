@@ -1,18 +1,14 @@
 # Integrating your application with Discord
 
 Your web app or worker doing things *in* Discord (posting, editing, roles), and Discord telling your app
-things (installs, purchases, account links). Code below compiles against Discord.Net 3.20.1 and is covered by
-[testing.md](testing.md).
+things (installs, purchases, account links). Code targets Discord.Net 3.20.1; tests in [testing.md](testing.md).
 
-## Contents
-1. Outbound: queue + publisher via `IDiscordClient`
-2. Post-then-edit (live status messages)
-3. REST-only client in a web app
-4. Channel webhooks (no bot)
-5. Webhook Events (installs, entitlements)
-6. OAuth2 account linking
-7. Linked Roles, monetization
-8. Idempotency & durability
+Code blocks omit `using` directives (add the System.*, Discord.*, Microsoft.Extensions.* and `MyApp.*` namespaces the
+types come from); the file-scoped namespace shows which project a file belongs to.
+
+**Contents:** 1 Outbound: queue + publisher via `IDiscordClient` · 2 Post-then-edit (live status messages) · 3
+REST-only client in a web app · 4 Channel webhooks (no bot) · 5 Webhook Events (installs, entitlements) · 6 OAuth2
+account linking · 7 Linked Roles, monetization · 8 Idempotency & durability
 
 ## 1. Outbound: queue + publisher
 
@@ -30,8 +26,6 @@ public sealed record Announcement(Guid Id, string Title, string Body, string? Im
 `AnnouncementQueue.cs`
 
 ```csharp
-using System.Threading.Channels;
-
 namespace MyApp.Discord.Announcements;
 
 /// <summary>
@@ -59,13 +53,6 @@ public sealed class AnnouncementQueue : IAnnouncementQueue
 `AnnouncementPublisher.cs`
 
 ```csharp
-using Discord;
-using Discord.Net;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using MyApp.Discord.Cards;
-
 namespace MyApp.Discord.Announcements;
 
 /// <summary>
@@ -127,13 +114,8 @@ public sealed class AnnouncementPublisher(
 }
 ```
 
-Registration (both hosting modes register the same three lines):
-
-```csharp
-services.AddSingleton<AnnouncementQueue>();
-services.AddSingleton<IAnnouncementQueue>(sp => sp.GetRequiredService<AnnouncementQueue>());
-services.AddHostedService<AnnouncementPublisher>();
-```
+Both DI extensions (gateway-bot.md §3, http-interactions.md §2) register the queue, its interface and the
+publisher.
 
 - `IDiscordClient` is the `DiscordSocketClient` in a bot process and a logged-in `DiscordRestClient` in a web
   app — the publisher doesn't care. `GetChannelAsync(id, CacheMode.AllowDownload)` falls back to REST before
@@ -169,26 +151,78 @@ one or give up, don't retry.
 
 ## 3. REST-only client in a web app
 
-No gateway needed to post or manage things:
+No gateway needed to post or manage things: one `DiscordRestClient` singleton (it owns the rate-limit buckets —
+never `new DiscordRestClient()` per request), also registered as `IDiscordClient`, logged in at startup. This
+process **receives no interactions**: no modules, no `PublicKey`, no Webhook Events inbox — so don't reuse
+`DiscordHttpExtensions`/`DiscordHttpStartup` (http-interactions.md) for it.
+
+**Only ONE process per application registers commands** — the one that owns the interaction modules (the
+gateway worker, or the HTTP-interactions host). `Register*Async` is a bulk overwrite: any other process that
+calls it replaces the command list with its own (none here) — in the usual layout (gateway worker + REST-only
+web API on the same application) every API deploy would delete the bot's global commands. Set
+`Discord:RegisterCommands=false` on any further module-owning process (gateway-bot.md §2).
+
+`DiscordRestExtensions.cs`
 
 ```csharp
-// excerpt — the full version is DiscordHttpExtensions/DiscordHttpStartup in http-interactions.md
-services.AddSingleton(_ => new DiscordRestClient(new DiscordRestConfig { LogLevel = LogSeverity.Info }));
-services.AddSingleton<IDiscordClient>(sp => sp.GetRequiredService<DiscordRestClient>());
-// IHostedService.StartAsync: await rest.LoginAsync(TokenType.Bot, token); // REST login validates the token (401 throws)
-```
+namespace MyApp.Discord;
 
-One singleton per process (it owns the rate-limit buckets). Never `new DiscordRestClient()` per request.
+public static class DiscordRestExtensions
+{
+    /// <summary>REST-only Discord client for a web API or worker that posts/edits but receives no interactions.</summary>
+    public static IServiceCollection AddDiscordRest(this IServiceCollection services)
+    {
+        services.AddOptions<DiscordOptions>()
+            .BindConfiguration(DiscordOptions.SectionName)
+            .Validate(o => !string.IsNullOrWhiteSpace(o.Token), "Discord:Token is required for the REST client")
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<DiscordOptions>, DiscordOptionsValidator>(); // gateway-bot.md §2
+
+        services.AddSingleton(_ => new DiscordRestClient(new DiscordRestConfig { LogLevel = LogSeverity.Info }));
+        services.AddSingleton<IDiscordClient>(sp => sp.GetRequiredService<DiscordRestClient>());
+        services.AddHostedService<DiscordRestStartup>();
+        return services;
+    }
+}
+
+/// <summary>
+/// Logs the REST client in and checks the token. Owns no modules and never calls <c>Register*Async</c> — command
+/// registration belongs to the one process that owns the modules.
+/// </summary>
+public sealed class DiscordRestStartup(
+    DiscordRestClient rest,
+    IOptions<DiscordOptions> options,
+    ILogger<DiscordRestStartup> logger) : IHostedService
+{
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        rest.Log += message => DiscordLog.Write(logger, message);
+
+        // REST LoginAsync calls users/@me (401 fails startup) but takes no cancel token, and RetryMode.AlwaysRetry
+        // retries 502s — WaitAsync keeps a Discord outage from hanging startup.
+        await rest.LoginAsync(TokenType.Bot, options.Value.Token).WaitAsync(cancellationToken);
+        var application = await rest.GetApplicationInfoAsync(new RequestOptions { CancelToken = cancellationToken });
+
+        // A token copied from another app (e.g. the staging bot) logs in fine — catch it here, not in production posts.
+        if (options.Value.ClientId.Length > 0
+            && options.Value.ClientId != application.Id.ToString(CultureInfo.InvariantCulture))
+        {
+            throw new InvalidOperationException(
+                $"Discord:Token belongs to application {application.Id}, not Discord:ClientId {options.Value.ClientId}");
+        }
+
+        logger.LogInformation("Discord REST client logged in for application {ApplicationId}", application.Id);
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => rest.LogoutAsync();
+}
+```
 
 ## 4. Channel webhooks (no bot)
 
 `WebhookAnnouncer.cs`
 
 ```csharp
-using Discord;
-using Discord.Webhook;
-using MyApp.Discord.Cards;
-
 namespace MyApp.Discord.Announcements;
 
 /// <summary>
@@ -281,34 +315,23 @@ Configure Portal → Webhooks → Endpoint URL + event types.
 `DiscordWebhookEventsEndpoint.cs`
 
 ```csharp
-using System.Text.Json;
-using Discord.Rest;
-using Microsoft.Extensions.Options;
-using MyApp.Discord;
-
 namespace MyApp.Interactions;
 
-/// <summary>
-/// Discord "Webhook Events" (Developer Portal → Webhooks): APPLICATION_AUTHORIZED / _DEAUTHORIZED (the only way to
-/// learn about user installs), ENTITLEMENT_CREATE/UPDATE/DELETE. Same Ed25519 signing as interactions, but the
-/// contract differs: answer PING (type 0) and events with 204 and an empty body, within 3 s.
-/// Delivery is retried, unordered and not guaranteed — persist raw, dedupe, process out of band.
-/// </summary>
+/// <summary>Discord "Webhook Events": verify like interactions, store raw, answer 204 — contract below.</summary>
 public static class DiscordWebhookEventsEndpoint
 {
     private const int MaxBodyBytes = 256 * 1024; // events are a few KB; cap what unauthenticated callers can make us buffer
 
     public static IEndpointConventionBuilder MapDiscordWebhookEvents(this IEndpointRouteBuilder app, string pattern) =>
         app.MapPost(pattern, HandleAsync)
-            .DisableAntiforgery()   // authenticated by signature, not cookies
-            .ExcludeFromDescription();   // optionally .RequireRateLimiting(...) per IP, as for the interactions endpoint
+            .AllowAnonymous()       // signature verification is the auth; the BFF fallback policy would 401 Discord's PING
+            .DisableAntiforgery()
+            .ExcludeFromDescription();
 
     private static async Task HandleAsync(HttpContext http)
     {
-        // Everything here finishes inside the request → RequestServices. The inbox is typically a scoped DbContext;
-        // resolving it from the root provider would throw under ValidateScopes or create a captive dependency.
+        // Everything here finishes inside the request → RequestServices (the inbox is a scoped DbContext).
         var services = http.RequestServices;
-        var rest = services.GetRequiredService<DiscordRestClient>();
         var publicKey = services.GetRequiredService<IOptions<DiscordOptions>>().Value.PublicKey;
         var inbox = services.GetRequiredService<IWebhookEventInbox>();
 
@@ -321,9 +344,8 @@ public static class DiscordWebhookEventsEndpoint
             return;
         }
 
-        // Same Ed25519 scheme as interactions. No freshness check here: Discord retries a delivery for ~10 min and
-        // the docs don't promise a fresh timestamp per retry — the dedupe key makes replays harmless instead.
-        if (!DiscordSignedRequest.IsValidSignature(rest, publicKey, signature, timestamp, body))
+        // No freshness check here (see below) — the dedupe key makes replays harmless instead.
+        if (!DiscordSignedRequest.IsValidSignature(publicKey, signature, timestamp, body))
         {
             http.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
@@ -332,8 +354,7 @@ public static class DiscordWebhookEventsEndpoint
         var (isPing, eventType) = Peek(body);
         if (!isPing)
         {
-            // Store first, think later: the raw bytes go to a durable inbox — even if the JSON is unexpected —
-            // and a background job interprets them. A 500 here would only trigger Discord's retries.
+            // Raw bytes to a durable inbox — even unexpected JSON; a background job interprets them.
             var dedupeKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body));
             await inbox.StoreAsync(eventType, dedupeKey, body, http.RequestAborted);
         }
@@ -353,7 +374,9 @@ public static class DiscordWebhookEventsEndpoint
                 return (false, "UNPARSEABLE");
             }
 
-            var isPing = root.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.Number && type.GetInt32() == 0;
+            // TryGetInt32: GetInt32 throws FormatException (not JsonException) on 0.5 / 1e99 → would be a 500
+            var isPing = root.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.Number
+                         && type.TryGetInt32(out var typeValue) && typeValue == 0;
             var eventType = root.TryGetProperty("event", out var evt) && evt.ValueKind == JsonValueKind.Object
                             && evt.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String
                 ? t.GetString()!
@@ -367,85 +390,235 @@ public static class DiscordWebhookEventsEndpoint
     }
 }
 
+/// <summary>Implement as a DB table (EF Core, scoped) with a unique index on the dedupe key.</summary>
 public interface IWebhookEventInbox
 {
     /// <param name="dedupeKey">Hash of the raw body — retries of the same delivery are identical.</param>
+    /// <remarks>A unique-key violation means "already stored" → return normally (the endpoint answers 204).
+    /// Rethrowing turns every retry into a 500 and keeps Discord retrying.</remarks>
     Task StoreAsync(string eventType, string dedupeKey, byte[] rawBody, CancellationToken ct);
 }
 
-/// <summary>Sample only — use a DB table with a unique index on the dedupe key.</summary>
-public sealed class InMemoryWebhookEventInbox(ILogger<InMemoryWebhookEventInbox> logger) : IWebhookEventInbox
-{
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> _events = new();
-
-    public IReadOnlyCollection<byte[]> Events => _events.Values.ToArray();
-
-    public Task StoreAsync(string eventType, string dedupeKey, byte[] rawBody, CancellationToken ct)
-    {
-        if (_events.TryAdd(dedupeKey, rawBody))
-        {
-            logger.LogInformation("Stored Discord webhook event {EventType}", eventType);
-        }
-
-        return Task.CompletedTask;
-    }
-}
+// EF Core sketch — plain INSERT, catch the duplicate (race-free; "check, then insert" isn't):
+//   db.DiscordWebhookEvents.Add(new DiscordWebhookEvent { EventType = eventType, DedupeKey = dedupeKey, Body = rawBody, ... });
+//   try { await db.SaveChangesAsync(ct); }
+//   catch (DbUpdateException ex) when (IsUniqueViolation(ex)) { }   // retry of a stored delivery → success
+// IsUniqueViolation: SqlException 2601/2627 or PostgresException 23505 — the helper in paypal's webhooks.md.
 ```
 
-Malformed-but-signed bodies are stored as `UNPARSEABLE` and acknowledged — a 500 would only start Discord's
-retry loop.
+**Preconditions — any hosting mode:** `Discord:PublicKey` (the same key that signs interactions) and an
+`IWebhookEventInbox` registration. `AddDiscordHttpInteractions` provides both. A gateway-mode web app
+(`AddDiscordGateway`: no `DiscordRestClient` registered, `PublicKey` optional) adds them itself — verification
+needs no client (`DiscordSignedRequest` brings its own), and an empty key would reject every delivery with 401:
 
-**Deliberately different from `noobit:paypal`:** PayPal webhooks are stored first and verified later in the
-processor, because verifying needs a remote call (postback API or certificate download) that can fail
-transiently — and a rejected delivery is a lost event. Discord's Ed25519 check is local, deterministic and
-cheap, so Discord requests are verified **at ingress** and
-unsigned bodies never reach the inbox — the ingress option `noobit:bff-security` allows for webhooks. What both
-share: raw bytes, body cap, dedupe, out-of-band processing.
+```csharp
+// Program.cs of a gateway-mode web app that also maps MapDiscordWebhookEvents
+builder.Services.AddDiscordGateway();
+builder.Services.AddOptions<DiscordOptions>()
+    .Validate(o => o.PublicKey.Length > 0, "Discord:PublicKey is required for Webhook Events")
+    .ValidateOnStart();
+builder.Services.AddScoped<IWebhookEventInbox, EfWebhookEventInbox>(); // your EF Core inbox
+```
 
-Differences from the interactions endpoint: PING is `type: 0` and both PING and events are answered with
-**204 empty body**; deliveries are retried with backoff for ~10 min when you don't answer within 3 s, and
-can arrive out of order — store raw, dedupe, process asynchronously. If Discord stops delivering
-(`event_webhooks_status = 3`, "disabled by Discord", usually for inactivity) it emails you — monitor it.
+Signature verification, body cap, 401/413 and antiforgery are the shared signed-request rules
+(http-interactions.md §3); verified **at ingress** (SKILL.md "Stack fit" explains the contrast with
+`noobit:paypal`). Differences from the interactions endpoint:
+- PING is `type: 0`; PING and events are answered with **204, empty body, but a Content-Type header**.
+- No timestamp freshness check: deliveries are retried with backoff for ~10 min when you don't answer within
+  3 s and the docs don't promise a fresh timestamp per retry — dedupe instead.
+- Deliveries are retried, can arrive out of order and aren't guaranteed — store raw, dedupe, process out of
+  band. A duplicate insert is success, not an error: the body was verified at ingress, so (unlike PayPal's
+  store-first inbox) a stored row with the same hash is always the genuine delivery. Malformed-but-signed bodies are stored as `UNPARSEABLE` and acknowledged — a 500 would only start
+  Discord's retry loop.
+- The inbox finishes inside the request → `RequestServices`; resolving a scoped DbContext from the root
+  provider throws under `ValidateScopes` or becomes a captive dependency.
+- If Discord stops delivering (`event_webhooks_status = 3`, "disabled by Discord", usually for inactivity) it
+  emails you — monitor it.
 
 ## 6. OAuth2 account linking
 
-Link a Discord user to your app's account (e.g. "connect Discord" on the profile page):
+Link a Discord user to the signed-in user's account ("Connect Discord" on the profile page). It is the
+**account-linking variant of bff-security's external login** ([external-login.md](../../bff-security/references/external-login.md)) —
+same temporary `External` cookie, same rules. Why not a hand-rolled `/account/discord/callback`: the callback
+arrives in a **cross-site** redirect from discord.com, so the `SameSite=Strict` session cookie isn't sent — the
+user (and any `state` kept in the session) is unknown there; under the fallback policy it 401s, otherwise the
+link is stored for nobody. And a GET callback must never persist a link on its own.
 
-1. Browser hits your BFF endpoint `/account/discord/link` → generate `state` (random, store in the session /
-   a short-lived HttpOnly cookie) → redirect to
-   `https://discord.com/oauth2/authorize?response_type=code&client_id=…&scope=identify&redirect_uri=…&state=…`
-   (add `prompt=none` only when re-linking an already-consented user — it skips the consent screen).
-2. Callback `/account/discord/callback?code=…&state=…`: verify `state`, then **server-side** POST
-   `https://discord.com/api/oauth2/token` (`application/x-www-form-urlencoded`: `grant_type=authorization_code`,
-   `code`, `redirect_uri`; client id/secret via Basic auth) using `IHttpClientFactory`. The code is single-use:
-   don't let the resilience handler retry this POST
-   (`AddStandardResilienceHandler(o => o.Retry.DisableForUnsafeHttpMethods())`).
-3. `GET https://discord.com/api/v10/users/@me` with `Authorization: Bearer <access_token>` → store the Discord
-   user id (snowflake) on the account. Discard the tokens unless you need ongoing access (then store them
-   encrypted server-side; refresh with `grant_type=refresh_token`, access tokens live 7 days).
-4. Tokens never reach the browser — this is the cookie-BFF rule (`noobit:bff-security`). Discord is an
-   *external* identity being linked, not your login provider.
+```mermaid
+sequenceDiagram
+    participant B as Browser (SPA, signed in)
+    participant A as BFF
+    participant D as discord.com
+    B->>A: GET /api/account/discord/start (top-level, same-site: session cookie sent)
+    A-->>B: 302 authorize (state carries the local user id) + correlation cookie
+    B->>D: consent
+    D-->>B: 302 /api/auth/callback/discord-link?code&state
+    B->>A: callback (cross-site: no session cookie, correlation cookie SameSite=None)
+    A->>D: code → token, GET users/@me (server-side)
+    A-->>B: 302 /account/discord/confirm + __Host-external (Lax, 5 min)
+    B->>A: GET /api/account/discord/pending (same-site XHR: session + External cookie)
+    B->>A: POST /api/account/discord/confirm (antiforgery-validated) → link stored
+```
 
-**"Sign in with Discord"** (Discord as the app's login) is out of scope here: it is an authentication design
-decision for `noobit:bff-security` (external OAuth behind the cookie BFF). This section only links an
-already-signed-in user's Discord account.
+`DiscordLink.cs`
+
+```csharp
+namespace MyApp.Discord.Linking;
+
+/// <summary>"Connect Discord" behind the cookie BFF — bff-security external-login.md, linking variant.</summary>
+public static class DiscordLink
+{
+    public const string Scheme = "DiscordLink";
+    public const string StartedBy = "link:user"; // AuthenticationProperties.Items key, round-trips in `state`
+    private const string AuthSchemeItem = ".AuthScheme"; // set by ASP.NET Core's RemoteAuthenticationHandler
+
+    /// <summary>Chain after bff-security's AddAuthentication().AddCookie(session).AddCookie(ExternalScheme.Name, …).</summary>
+    public static AuthenticationBuilder AddDiscordLink(this AuthenticationBuilder auth)
+    {
+        // Credentials come from DiscordOptions (gateway-bot.md §2), validated at startup like the rest of it.
+        // Binding again is harmless when AddDiscordGateway / AddDiscordHttpInteractions already did.
+        auth.Services.AddOptions<DiscordOptions>()
+            .BindConfiguration(DiscordOptions.SectionName)
+            .Validate(o => o.ClientId.Length > 0 && o.ClientSecret.Length > 0,
+                "Discord:ClientId and Discord:ClientSecret are required for account linking")
+            .ValidateOnStart();
+        auth.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<DiscordOptions>, DiscordOptionsValidator>());
+        auth.Services.AddOptions<OAuthOptions>(Scheme).Configure<IOptions<DiscordOptions>>((o, discord) =>
+        {
+            o.ClientId = discord.Value.ClientId;
+            o.ClientSecret = discord.Value.ClientSecret;        // a secret (SKILL.md rule 15)
+        });
+
+        return auth.AddOAuth(Scheme, o =>
+        {
+            o.SignInScheme = ExternalScheme.Name;               // temporary Lax cookie — never the app session
+            // Handled by the authentication middleware, which runs before UseRateLimiter (bff-security order) and
+            // short-circuits here — no rate limiter sees it (and no endpoint policy applies). Portal → OAuth2 → Redirects.
+            o.CallbackPath = "/api/auth/callback/discord-link";
+            o.AuthorizationEndpoint = "https://discord.com/oauth2/authorize";
+            o.TokenEndpoint = "https://discord.com/api/oauth2/token";
+            o.UserInformationEndpoint = "https://discord.com/api/v10/users/@me";
+            o.Scope.Add("identify");                            // + "role_connections.write" for Linked Roles (§7)
+            o.SaveTokens = false;                               // the default — tokens never go into a cookie
+            o.ClaimActions.MapJsonKey(ClaimTypes.NameIdentifier, "id"); // snowflake, as a string
+            o.ClaimActions.MapJsonKey(ClaimTypes.Name, "username");
+            o.Events.OnCreatingTicket = async ctx =>
+            {
+                var ct = ctx.HttpContext.RequestAborted;
+                using var request = new HttpRequestMessage(HttpMethod.Get, ctx.Options.UserInformationEndpoint);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ctx.AccessToken);
+                using var response = await ctx.Backchannel.SendAsync(request, ct);
+                response.EnsureSuccessStatusCode();
+                using var user = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+                ctx.RunClaimActions(user.RootElement);
+            };
+            o.Events.OnRemoteFailure = ctx =>                   // "Cancel" on Discord's consent screen, expired state, …
+            {
+                ctx.Response.Redirect("/account/discord/confirm?error=failed");
+                ctx.HandleResponse();
+                return Task.CompletedTask;
+            };
+        });
+    }
+
+    /// <param name="api">bff-security's antiforgery-filtered <c>/api</c> group (fallback policy = signed in). Deliberately
+    /// NOT the <c>/api/auth</c> group: its per-IP <c>auth</c> policy (5/min) is the login brute-force budget, and these
+    /// signed-in calls would spend it. They stay on the global per-user limiter.</param>
+    public static RouteGroupBuilder MapDiscordLink(this RouteGroupBuilder api)
+    {
+        var account = api.MapGroup("/account/discord");
+        // Start: top-level navigation from the signed-in SPA (same-site → the Strict session cookie is sent; no
+        // AllowAnonymous). A GET because Chrome applies the page's `form-action 'self'` to a form POST's redirect
+        // to discord.com. Starting changes nothing; a forged cross-site navigation arrives without the session → 401.
+        account.MapGet("/start", (ClaimsPrincipal user) => TypedResults.Challenge(
+            new AuthenticationProperties
+            {
+                RedirectUri = "/account/discord/confirm",       // SPA page ("Link Discord account @name?")
+                Items = { [StartedBy] = user.FindFirstValue(ClaimTypes.NameIdentifier) }, // data-protected in `state`
+            },
+            [Scheme]));
+
+        // Confirm page data — same-site XHR, so the session AND the External cookie arrive.
+        account.MapGet("/pending", async Task<Results<Ok<PendingDiscordLink>, NotFound>> (HttpContext http) =>
+            await ReadPendingAsync(http) is { } pending ? TypedResults.Ok(pending) : TypedResults.NotFound());
+
+        // Commit: a POST under /api → validated by the group's antiforgery filter. A forced GET never links.
+        account.MapPost("/confirm", async Task<Results<NoContent, Conflict, BadRequest>> (
+            HttpContext http, IDiscordLinkStore links, CancellationToken ct) =>
+        {
+            if (await ReadPendingAsync(http) is not { } pending) return TypedResults.BadRequest();
+            var userId = http.User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+            var linked = await links.TryLinkAsync(userId, pending.DiscordUserId, ct);
+            await http.SignOutAsync(ExternalScheme.Name);       // one-shot
+            return linked ? TypedResults.NoContent() : TypedResults.Conflict(); // Conflict: linked to another account
+        });
+        return account;
+    }
+
+    private static async Task<PendingDiscordLink?> ReadPendingAsync(HttpContext http)
+    {
+        var result = await http.AuthenticateAsync(ExternalScheme.Name);
+        // The External cookie is shared with bff-security's login/sign-up and other provider links: accept only a
+        // ticket THIS handler issued (RemoteAuthenticationHandler stamps Items[".AuthScheme"] = scheme name).
+        return result.Succeeded
+               && result.Properties.Items.TryGetValue(AuthSchemeItem, out var issuedBy) && issuedBy == Scheme
+               && result.Properties.Items.TryGetValue(StartedBy, out var startedBy)
+               && startedBy == http.User.FindFirstValue(ClaimTypes.NameIdentifier) // committed by whoever started it
+               && result.Principal?.FindFirstValue(ClaimTypes.NameIdentifier) is { } discordUserId
+            ? new PendingDiscordLink(discordUserId, result.Principal.FindFirstValue(ClaimTypes.Name) ?? discordUserId)
+            : null;
+    }
+}
+
+public sealed record PendingDiscordLink(string DiscordUserId, string DiscordUsername);
+
+/// <summary>Links table with a unique index on the Discord user id (one Discord account → one app user).</summary>
+public interface IDiscordLinkStore
+{
+    /// <returns><c>true</c> when linked (idempotent for the same user); <c>false</c> when the Discord account
+    /// already belongs to another user (catch the unique violation — never auto-relink).</returns>
+    Task<bool> TryLinkAsync(string userId, string discordUserId, CancellationToken ct);
+}
+```
+
+Wiring: `builder.Services.AddAuthentication(…).AddCookie(…).AddCookie(ExternalScheme.Name, …).AddDiscordLink()`
+and `api.MapDiscordLink()` (`Discord:ClientId` in appsettings, `Discord:ClientSecret` as a secret). The SPA
+starts with `window.location.href = '/api/account/discord/start'` (an XHR
+can't follow the redirect to discord.com); its confirm page shows `pending.discordUsername`, POSTs through
+`HttpClient` (the XSRF interceptor adds the header) and shows `?error=failed` as "linking cancelled".
+
+- The handler does `state`, correlation cookie and the code exchange (server-side, over its `Backchannel` —
+  no retry layer, so the single-use code is never replayed). Tokens never reach the browser. The community
+  `AspNet.Security.OAuth.Discord` package (`AddDiscord`) is an equivalent alternative to raw `AddOAuth`.
+- Store only the Discord user id unless you need ongoing access; then (Linked Roles) store access + refresh
+  token **server-side**, encrypted (`IDataProtector`): in `OnCreatingTicket` as a *pending* grant keyed by a
+  random id you add as a claim, promoted by the confirm POST — a grant isn't attached to an account before the
+  user confirms. Access tokens live 7 days; refresh with `grant_type=refresh_token`.
+- Discord.Net's `DiscordRestClient.LoginAsync(TokenType.Bearer, accessToken)` can call user-scoped endpoints
+  with typed models — a **short-lived client per user operation** (create, use, dispose), separate from the
+  bot's singleton client.
+
+**"Sign in with Discord"** (Discord as the app's login) is out of scope here: it is bff-security's external
+login proper. This section only links an already-signed-in user's Discord account.
 
 Scopes: `identify` (id, username, avatar) is enough for linking; `guilds.members.read` to read their member
 data in a guild; `role_connections.write` for Linked Roles; `applications.commands` to install the app.
-Discord.Net's `DiscordRestClient.LoginAsync(TokenType.Bearer, accessToken)` can call user-scoped endpoints with
-the user's token if you prefer typed models over raw HTTP — that is a **short-lived client per user operation**
-(create, use, dispose), separate from the bot's singleton client.
 
 ## 7. Linked Roles, monetization
 
 - **Linked Roles**: register up to 5 metadata fields (`PUT /applications/{id}/role-connections/metadata`),
-  users authorize with `role_connections.write`, you `PUT /users/@me/applications/{id}/role-connection` with
-  their values; server admins create roles requiring e.g. "level ≥ 10". Set the Portal's *Linked Roles
-  Verification URL* to your BFF link endpoint.
+  users authorize with `role_connections.write`, and their values go to `PUT /users/@me/applications/{id}/role-connection`
+  with the stored user token — the confirm POST only **enqueues** that update (SKILL.md rule 8); the background
+  publisher does the PUT, and again whenever the values change; server admins create roles requiring e.g.
+  "level ≥ 10". **Linked Roles Verification URL**: Discord opens it in the browser from discord.com — a
+  cross-site navigation, so the Strict session cookie isn't sent and the user arrives looking logged out.
+  Point it at an **SPA route** (e.g. `https://app.example.com/account/discord/connect`, served anonymously as
+  `index.html`), never at the BFF challenge endpoint: the SPA's `/api/me` call is same-site and carries the
+  session; on 401 it sends the user to your login with `returnUrl=/account/discord/connect` and resumes there
+  after login, then navigates to `/api/account/discord/start` (§6) and, after the confirm, tells the user to
+  return to Discord.
 - **Monetization**: SKUs in Portal → Monetization. Gate features with `Context.Interaction.Entitlements`,
-  upsell with a Premium button — `new ButtonBuilder(style: ButtonStyle.Premium, skuId: id)`, **not**
-  `ButtonBuilder.CreatePremiumButton` (3.20.1 builds it with the wrong style and it fails validation);
-  PREMIUM_REQUIRED is deprecated —
+  upsell with a Premium button (rich-ui.md §7; PREMIUM_REQUIRED is deprecated) —
   sync state from `ENTITLEMENT_*` webhook events or gateway events (shard 0). Test with
   `client.CreateTestEntitlementAsync`.
 

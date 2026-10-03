@@ -37,12 +37,14 @@ Whatever the approach, these apply:
 
 ## 2. Classic Store — hydration meta-reducer (hand-rolled)
 
-The canonical mechanism. Rehydrate on `INIT`/`UPDATE` (both from `@ngrx/store`; `UPDATE` covers
-lazily-registered feature reducers), persist on every other action.
+The canonical mechanism. Rehydrate on `INIT` **only** (from `@ngrx/store`), persist on every other
+action. Not on `UPDATE`: it fires each time a feature reducer registers (lazy routes), and re-merging
+storage then overwrites whatever changed in memory since startup — with a debounced write, storage
+lags memory, so that is a silent rollback.
 
 ```ts
 // hydration.metareducer.ts
-import { ActionReducer, INIT, UPDATE } from '@ngrx/store';
+import { ActionReducer, INIT } from '@ngrx/store';
 
 const STORAGE_KEY = 'app_state_v1';
 const PERSISTED_SLICES = ['preferences', 'filters'] as const;   // whitelist — never the whole tree
@@ -50,7 +52,7 @@ const PERSISTED_SLICES = ['preferences', 'filters'] as const;   // whitelist —
 export function hydrationMetaReducer(isBrowser: boolean) {
   return (reducer: ActionReducer<AppState>): ActionReducer<AppState> =>
     (state, action) => {
-      if (isBrowser && (action.type === INIT || action.type === UPDATE)) {
+      if (isBrowser && action.type === INIT) {                       // INIT only — see above
         const stored = localStorage.getItem(STORAGE_KEY);
         if (stored) {
           try {
@@ -135,9 +137,9 @@ import { getState, patchState, signalStoreFeature, type, withHooks } from '@ngrx
 export function withStorageSync<State extends object>(config: {
   key: string;
   storage?: 'local' | 'session';
-  select?: (state: State) => Partial<State>;
+  select: (state: State) => Partial<State>;   // required whitelist — no "persist everything" default (§1)
 }) {
-  const { key, storage = 'local', select = (s: State) => s } = config;
+  const { key, storage = 'local', select } = config;
   return signalStoreFeature(
     { state: type<State>() },                 // required input: any state
     withHooks({
@@ -160,8 +162,11 @@ export function withStorageSync<State extends object>(config: {
 
 // usage
 export const FilterStore = signalStore(
-  withState({ query: '', order: 'asc' as 'asc' | 'desc' }),   // not `as const` — that locks it to 'asc'
-  withStorageSync<{ query: string; order: 'asc' | 'desc' }>({ key: 'filter_v1' }),
+  withState({ query: '', order: 'asc' as 'asc' | 'desc', isLoading: false }),   // not `as const` — that locks it to 'asc'
+  withStorageSync<{ query: string; order: 'asc' | 'desc'; isLoading: boolean }>({
+    key: 'filter_v1',
+    select: ({ query, order }) => ({ query, order }),   // whitelist — isLoading is never persisted
+  }),
 );
 ```
 
@@ -176,15 +181,24 @@ package **moved to `@ngrx-toolkit/core`** (Sept 2026); `@angular-architects/ngrx
 installs but is deprecated — use the new name. Its major tracks NgRx (`22.x` → `@ngrx/signals` ^22).
 
 ```ts
-import { withStorageSync, withSessionStorage } from '@ngrx-toolkit/core';
+import { withIndexedDB, withSessionStorage, withStorageSync } from '@ngrx-toolkit/core';
 
 signalStore(withState({ theme: 'light' }), withStorageSync('prefs'));                   // localStorage
 signalStore(withState({ theme: 'light' }), withStorageSync('prefs', withSessionStorage()));
-signalStore(withState({ cart: [] }), withStorageSync({ key: 'cart', select: (s) => ({ cart: s.cart }) }));
+
+type CartItem = { sku: string; qty: number };
+type CartState = { cart: CartItem[]; checkoutOpen: boolean };   // typed — `{ cart: [] }` would infer never[]
+const initialCart: CartState = { cart: [], checkoutOpen: false };
+signalStore(withState(initialCart), withStorageSync({ key: 'cart', select: (s) => ({ cart: s.cart }) }));
+
+signalStore(withState(initialCart), withStorageSync('cart', withIndexedDB()));    // async backend
 ```
 
-Options: `key`, `autoSync` (default true), `select`, `stringify`/`parse`. Exposes
-`readFromStorage()` / `writeToStorage()` / `clearStorage()` / `whenSynced()`. The same package's
+Options: `key`, `autoSync` (default true), `select`, `stringify`/`parse`. Sync backends
+(localStorage — the default — and `withSessionStorage()`) expose `readFromStorage()` /
+`writeToStorage()` / `clearStorage()`. Only the async `withIndexedDB()` backend adds `isSynced`
+and `whenSynced(): Promise<void>` (its read/write/clear return promises) — await
+`store.whenSynced()` before writes that depend on the rehydrated state. The same package's
 `withDevtools('name')` gives Signal Stores a Redux DevTools tab; it is not stripped from prod
 builds automatically — swap it for `withDevToolsStub` (exact export name — capital **T**) via an
 environment file + `angular.json` file replacements.

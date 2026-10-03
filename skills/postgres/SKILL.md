@@ -61,7 +61,7 @@ SELECT 'only_in_new' AS side, * FROM (SELECT * FROM new_q EXCEPT ALL SELECT * FR
 ## Locks and production DDL
 
 - Most `ALTER TABLE` forms take `ACCESS EXCLUSIVE`. Waiting behind one long transaction, the DDL **queues every later query on the table behind it** (even plain `SELECT`s) — a "fast" migration becomes an outage.
-- Migrations: `SET lock_timeout = '5s'` (fail fast, retry) and a `statement_timeout`; set `idle_in_transaction_session_timeout` for app roles so forgotten transactions can't pin locks.
+- Migrations: `SET lock_timeout = '5s'` (fail fast, retry) and a `statement_timeout`; set `idle_in_transaction_session_timeout` for app roles so forgotten transactions can't pin locks — except where idling inside a transaction is the design: the outbox dispatcher holds its `SKIP LOCKED` claim open while awaiting broker confirms (≤ 10 s per row, up to batch × 10 s), so it raises the timeout with `SET LOCAL` for that transaction (`rabbitmq-messaging` → outbox-inbox.md) — or use smaller batches.
 - Diagnose with `pg_blocking_pids(pid)` over `pg_stat_activity` — query in the reference.
 - Big tables: `ADD CONSTRAINT … NOT VALID` (FK/CHECK; NOT NULL on PG 18+), then `VALIDATE CONSTRAINT` (lighter lock, writes keep going).
 - Queue/outbox polling: `SELECT … FOR UPDATE SKIP LOCKED` so workers don't block each other — queue tables only.
@@ -71,7 +71,7 @@ SELECT 'only_in_new' AS side, * FROM (SELECT * FROM new_q EXCEPT ALL SELECT * FR
 | Mistake | Fix |
 |---|---|
 | `timestamp` vs `timestamptz` mixing | `timestamptz` everywhere (UTC); casts in predicates kill indexes |
-| `OFFSET 100000 LIMIT 20` pagination | Keyset pagination (`WHERE (created, id) < (@created, @id) ORDER BY created DESC, id DESC`) |
+| `OFFSET 100000 LIMIT 20` pagination | Keyset pagination (`WHERE (created, id) < (@created, @id) ORDER BY created DESC, id DESC`; `@name` is Npgsql/Dapper parameter syntax — positional `$1, $2` only inside `PREPARE`/function bodies (or psql 16+ `\bind`), not in a plain psql query) |
 | Function on an indexed column in WHERE | Expression index with the identical expression, or rewrite the predicate |
 | Assuming FKs are indexed | Index FK columns explicitly |
 | `count(*)` as a cheap existence check | `EXISTS (SELECT 1 ...)` |

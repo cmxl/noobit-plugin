@@ -215,7 +215,7 @@ export class BookList {
 ```
 
 `selectSignal` accepts an optional equality fn. Don't use **"selectors with props"** — deprecated,
-removed in v23; use factory selectors or view-model selectors instead. `inject(Store)` without a
+scheduled for removal in v23 (`@deprecated` note in `@ngrx/store`'s `selector.ts`); use factory selectors or view-model selectors instead. `inject(Store)` without a
 generic is fine (types are inferred from selectors).
 
 ## 6. Entity (`createEntityAdapter`)

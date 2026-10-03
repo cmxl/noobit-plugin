@@ -27,7 +27,8 @@ https://developer.paypal.com/api/rest/requests/ + /authentication/.
 
 1. **Create** — `POST /v2/checkout/orders` with `intent: CAPTURE` (or `AUTHORIZE`), `purchase_units[]`
    (`amount`, `reference_id`, `custom_id`, `invoice_id`), and a `PayPal-Request-Id`.
-   **Persist `order.id → your order + tenant` before returning to the client** — that mapping is how
+   **Persist `(environment, order.id) → your order + tenant + expected amount + payee merchant id` before
+   returning to the client** — that mapping ([inbox-table.md](inbox-table.md#the-tables-next-to-the-inbox)) is how
    webhooks find their way back later.
 2. **Approve** — the buyer approves via the JS SDK buttons or the `rel: approve` link.
 3. **Capture** — `POST /v2/checkout/orders/{id}/capture` (new `PayPal-Request-Id`, reused on retries of
@@ -113,7 +114,7 @@ Shows the three things a hand-rolled client gets wrong: `PayPal-Request-Id` on P
 ```csharp
 // services.AddHttpClient<IPayPalClient, PayPalClient>((sp, c) =>
 //         c.BaseAddress = new Uri(sp.GetRequiredService<IOptions<PayPalOptions>>().Value.BaseUrl))   // trailing "/"
-//     .AddStandardResilienceHandler(o => o.Retry.DisableForUnsafeHttpMethods());
+//     .AddStandardResilienceHandler(o => o.Retry.DisableForUnsafeHttpMethods());   // using Microsoft.Extensions.Http.Resilience;
 public interface IPayPalClient
 {
     Task<PayPalOrder> CreateOrderAsync(CreateOrderBody body, string requestId, CancellationToken ct);
@@ -227,10 +228,38 @@ internal sealed partial class PayPalJson : JsonSerializerContext;
 ```
 
 - Callers decide what an issue means: the capture endpoint catches `HasIssue("ORDER_ALREADY_CAPTURED")`
-  and books the order's existing capture (see [website-checkout.md](website-checkout.md#server-endpoints-aspnet-core));
+  and books the order's existing capture, and maps `INSTRUMENT_DECLINED` / `ORDER_NOT_APPROVED` (422) and
+  `PREVIOUS_REQUEST_IN_PROGRESS` (409) to statuses the buyer's page acts on (see [website-checkout.md](website-checkout.md#server-endpoints-aspnet-core));
   the processor maps 5xx/timeouts to `Failed` (retry) and other 4xx to `DeadLetter`.
 - Add refund (`POST v2/payments/captures/{id}/refund`) and `GET v2/payments/refunds/{id}` the same way.
 - One app per tenant: resolve the tenant's credentials + base URL per call and put the tenant in `TokenKey`.
+
+### Options (`PayPal` section, validated at startup)
+
+```csharp
+// services.AddOptions<PayPalOptions>().BindConfiguration("PayPal").ValidateOnStart();
+// services.AddSingleton<IValidateOptions<PayPalOptions>, PayPalOptionsValidator>();
+public sealed class PayPalOptions
+{
+    [Required, AllowedValues("sandbox", "live")] public string Environment { get; set; } = "";
+    [Required] public string ClientId { get; set; } = "";
+    [Required] public string ClientSecret { get; set; } = "";          // secret store only, never appsettings.json
+    [Required, Url] public string BaseUrl { get; set; } = "";          // https://api-m.sandbox.paypal.com/ | https://api-m.paypal.com/
+    // Your account's merchant id (payer id) IN THIS ENVIRONMENT: sandbox and live ids differ. Written to
+    // paypal_order.payee_merchant_id at order creation; booking compares payee.merchant_id against it.
+    [Required, StringLength(32)] public string MerchantId { get; set; } = "";
+    // Id of the webhook registered for THIS environment's app (webhooks.md §3) — not a secret, but signature
+    // verification fails with the wrong one. Config key PayPal:WebhookId.
+    [Required] public string WebhookId { get; set; } = "";
+}
+
+[OptionsValidator]
+public sealed partial class PayPalOptionsValidator : IValidateOptions<PayPalOptions>;
+```
+
+Find the merchant id under the account's business information (sandbox: the sandbox business account's
+details) or read `purchase_units[].payee.merchant_id` from one sandbox order. One app per tenant: store
+each tenant's merchant id and webhook id with its credentials instead of in this options class.
 
 ## SDKs
 

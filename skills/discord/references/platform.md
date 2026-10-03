@@ -1,18 +1,11 @@
 # How Discord works (platform reference)
 
-Verified 2026-10-02 against https://docs.discord.com/developers (raw markdown: append `.md` to any page URL).
-API version **v10**. Values marked *(2025+)* changed recently — older blog posts and LLM memory get them wrong.
+Source: https://docs.discord.com/developers (raw markdown: append `.md` to any page URL).
+API version **v10**. Values marked with a date, e.g. *(2026-06)*, changed recently — older blog posts and LLM memory get them wrong.
 
-## Contents
-1. App model & installation
-2. Gateway (WebSocket)
-3. Intents
-4. HTTP interactions endpoint
-5. Interactions & callbacks
-6. Application commands
-7. Components & limits
-8. Rate limits
-9. Recent and upcoming changes
+**Contents:** 1 App model & installation · 2 Gateway (WebSocket) · 3 Intents · 4 HTTP interactions endpoint · 5
+Interactions & callbacks · 6 Application commands · 7 Components & limits · 8 Rate limits · 9 Recent and upcoming
+changes
 
 ---
 
@@ -34,9 +27,10 @@ API version **v10**. Values marked *(2025+)* changed recently — older blog pos
   with default install settings per context: guild install `applications.commands` + `bot` (+ a permissions
   integer), user install `applications.commands` only. Request only the permissions you use.
 - **Permissions** are a big-integer bitfield serialized as a string (already > 52 bits). Since 2026-02-23 these
-  are split out and must be requested explicitly: `PIN_MESSAGES` (1<<51, was Manage Messages),
-  `CREATE_GUILD_EXPRESSIONS` (1<<43, creating emoji/stickers), `CREATE_EVENTS` (1<<44). `BYPASS_SLOWMODE`
-  (1<<52) exists too, but bots aren't subject to slowmode, so apps don't need it.
+  are split out and must be requested explicitly (change-log "Permission Changes Going into Effect February
+  2026"): `PIN_MESSAGES` (1<<51, was Manage Messages), `CREATE_GUILD_EXPRESSIONS` (1<<43, creating
+  emoji/stickers), `CREATE_EVENTS` (1<<44). `BYPASS_SLOWMODE` (1<<52) exists too, but per the same entry bots
+  aren't affected by slowmode, so apps don't need it.
   `USE_EXTERNAL_APPS` (1<<50) decides whether user-installed apps may post publicly in a server.
 - Every interaction carries **`app_permissions`** (Discord.Net: `Context.Interaction.Permissions`) — check it
   before attempting an action instead of eating 403s. Resolved channels carry their own `app_permissions`
@@ -49,23 +43,23 @@ API version **v10**. Values marked *(2025+)* changed recently — older blog pos
 Discord.Net's `DiscordSocketClient` implements all of this — you need the model to read its logs and choose
 settings, not to reimplement it.
 
-- `GET /gateway/bot` → url, recommended `shards`, `session_start_limit` (typically 1000 identifies/24 h,
-  `max_concurrency` identifies per 5 s). Connect `wss://gateway.discord.gg/?v=10&encoding=json`.
-- Flow: Hello (op 10, `heartbeat_interval`) → Identify (op 2, token + intents + shard) → READY (`session_id`,
-  `resume_gateway_url`) → dispatches (op 0) with sequence numbers. Heartbeat (op 1) every interval; missing ACK
-  (op 11) = zombie connection → reconnect & Resume (op 6) to `resume_gateway_url`; missed events replay.
+- `GET /gateway/bot` → recommended `shards` and `session_start_limit` (1000 identifies/24 h across all shards,
+  `max_concurrency` identifies per 5 s). Exhausting it terminates all sessions and resets the token.
 - **READY fires again after any reconnect that could not resume** — never subscribe handlers or do one-time
   setup in it without a guard.
 - **Close codes that must not reconnect**: 4004 auth failed, 4010 invalid shard, 4011 sharding required,
   4012 invalid API version, 4013 invalid intents, 4014 disallowed (privileged, not enabled) intents.
-  Discord.Net only stops on 4006/4014 by itself — stop the host on the others (gateway-bot.md), and restart
-  only with backoff: exhausting the daily identify limit terminates all sessions and **resets the bot token**.
+  Discord.Net gives up by itself only on 4006/4014 (and then sits disconnected) and retries the rest — stop the
+  host on 401, 4004, 4006 and 4010–4014 and restart only with backoff
+  (SKILL.md rule 10, gateway-bot.md §4).
 - **Sharding**: required at 2,500 guilds per shard (4011 otherwise). `shard_id = (guild_id >> 22) % num_shards`.
   DMs and entitlement events go to shard 0. Use `DiscordShardedClient` + `ShardedInteractionContext`; register
   commands once on the first `ShardReady`. Large bots (150k+ guilds) must use a multiple of the assigned count
   and, since *2026-09-15*, pass `shard` to Get Current User Guilds.
 - Gateway send limit: **120 events / 60 s per connection** (presence updates, member requests…).
-  Requesting *all* members of a guild (op 8, empty query) is limited to once per guild per 30 s *(2025)*.
+  Requesting *all* members of a guild (op 8, empty query, `limit` 0) is limited to 1 request per guild per 30 s
+  per bot (`RATE_LIMITED` event otherwise; change-log, rolled out 2025-10-01) — cache members from
+  `GUILD_MEMBER_*` events instead.
 - Message cache is opt-in in Discord.Net (`MessageCacheSize = 0` default): delete/update events give ids only.
 
 ## 3. Intents
@@ -135,7 +129,7 @@ settings, not to reimplement it.
 - Types: CHAT_INPUT (slash, 1), USER (2), MESSAGE (3), PRIMARY_ENTRY_POINT (4, Activities).
 - Names: slash 1–32 chars, lowercase, `^[-_\p{L}\p{N}…]{1,32}$`; user/message commands may use spaces and
   capitals ("Show profile"). Description 1–100.
-- Limits: 100 global slash; **15 user + 15 message** context commands *(raised 2026-03)*; 25 options;
+- Limits: 100 global slash; **15 user + 15 message** context commands *(raised from 5 on 2026-03-03)*; 25 options;
   25 choices; one nesting level (command → group → subcommand; a command with subcommands isn't itself
   invocable); 8000 chars combined name/description/choices; **200 command creates per day per guild**.
 - Registration is REST: `PUT /applications/{app}/commands` (global) or `…/guilds/{guild}/commands` bulk-
@@ -209,12 +203,12 @@ settings, not to reimplement it.
 | 2025-08 → 2026-02 | Label, selects, file upload, radio, checkbox in modals | Old ActionRow modals deprecated |
 | 2026-02-23 | Permission splits enforced (pins, slowmode bypass, expressions, events) | Update install permissions |
 | 2026-03-01 | Voice requires DAVE end-to-end encryption | Discord.Net ≥ 3.19 + libdave native |
-| 2026-06 | Privileged intents threshold = 10,000 users, annual renewal | Avoid privileged intents |
-| 2026-09-03 | Default upload limit 20 MiB | Use `attachment_size_limit` |
 | 2026-04-14 | Forwarding a message requires being able to read its content (error 160014) | Check before forwarding |
 | 2026-05-05 | `premium_type` on users needs the `identify.premium` scope | Request it only if used |
+| 2026-06 | Privileged intents threshold = 10,000 users, annual renewal | Avoid privileged intents |
 | 2026-07-16 | Resolved channels in interactions include `app_permissions` | Check per target channel |
 | 2026-08-05 | `file_types` filter on ATTACHMENT options and File Upload components | Discord.Net 3.20.1: not yet (dev branch) |
+| 2026-09-03 | Default upload limit 20 MiB | Use `attachment_size_limit` |
 | 2026-09-11 | Multiline string options; fuzzy autocomplete picker | — |
 | 2026-09-15 | Large-bot sharding: `shard` param required on Get Current User Guilds | Only 150k+ guild bots |
 | 2026-09-17/22 | Custom status hidden by profile privacy; age-assurance rollout | Don't rely on presence/custom status |

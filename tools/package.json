@@ -1,0 +1,11 @@
+{
+  "name": "noobit-plugin-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "node lint-plugin.mjs"
+  },
+  "devDependencies": {
+    "yaml": "^2.8.1"
+  }
+}

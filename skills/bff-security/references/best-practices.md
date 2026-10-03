@@ -71,7 +71,7 @@ public sealed class SecurityStampEvents(ISessionStampStore stamps) : CookieAuthe
   - **Mint the readable token in `Response.OnStarting`**, from middleware placed between `UseAuthentication` and `UseAuthorization`: 401 responses (e.g. the startup `GET /api/me` while logged out) still carry the cookie, and the token reflects the request's *final* `HttpContext.User`. Register the callback for `/api` requests only: `GetAndStoreTokens` calls `SetDoNotCacheHeaders`, which overwrites `Cache-Control` with `no-cache, no-store` ("overrides any user set value" — `DefaultAntiforgery` source), so on static bundles, proxied or output-cached responses it would disable caching.
 - **Re-issue tokens after login/logout — it is not automatic.** Tokens are bound to the identity in `HttpContext.User`, and `IAntiforgery` caches the generated request token for the rest of the request. Without intervention the login response carries a token for the *anonymous* user and the first POST after login fails ("token was meant for a different claims-based user"). Fix: in the login endpoint set `http.User = principal` right after `SignInAsync`; in logout set `http.User = new ClaimsPrincipal(new ClaimsIdentity())` after `SignOutAsync`. The `OnStarting` middleware then mints the right token. Verified end-to-end: anon token → login (200) → POST with the login-response token (200); the pre-login token is rejected (400); logout → login with the post-logout token (200). (Calling `GetAndStoreTokens` a second time inside the endpoint does **not** work — it returns the cached anonymous token.)
 - **Login CSRF:** the login POST is validated too (anonymous token), so the client needs `XSRF-TOKEN` before the login form submits. When nginx serves `index.html` nothing has set it yet — the app-startup `GET /api/me` does.
-- The explicit endpoint filter must cover **every non-GET/HEAD/OPTIONS/TRACE method including DELETE** (middleware auto-validation never covers DELETE) — `IsRequestValidAsync` does. `DisableAntiforgery()` only for non-browser endpoints (webhooks) protected by HMAC/mTLS instead.
+- The explicit endpoint filter must cover **every non-GET/HEAD/OPTIONS/TRACE method including DELETE** (middleware auto-validation never covers DELETE) — `IsRequestValidAsync` does. `DisableAntiforgery()` only for non-browser endpoints (webhooks), protected instead by the provider's signature — verified at ingress or in a store-first inbox processor (SKILL.md → CSRF).
 - ASP.NET Core's token is HMAC-protected via Data Protection and bound to the authenticated user — this satisfies OWASP's "signed double-submit with session binding" requirement; don't hand-roll a naive double-submit cookie.
 - Defense-in-depth per OWASP: SameSite on both cookies + the fact that a custom header (`X-XSRF-TOKEN`) can't be set cross-origin without a CORS preflight. Layers, not replacements.
 
@@ -97,14 +97,41 @@ builder.Services.AddDataProtection()
 ### Rate limiting (Microsoft Learn: rate limiting middleware)
 
 ```csharp
+// Both limits are configuration-bound (global 100 / 60 s, auth 5 / 60 s) so e2e compose overrides and test
+// fixtures can raise them via env RateLimiting__Global__PermitLimit / RateLimiting__Auth__PermitLimit
+// (and …__WindowSeconds) — never by editing code.
+builder.Services.AddOptions<GlobalRateLimitOptions>().BindConfiguration(GlobalRateLimitOptions.Section).ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<GlobalRateLimitOptions>, GlobalRateLimitOptionsValidator>();
+builder.Services.AddOptions<AuthRateLimitOptions>().BindConfiguration(AuthRateLimitOptions.Section).ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<AuthRateLimitOptions>, AuthRateLimitOptionsValidator>();
 builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests; // do set this; 429 is not the default
     o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+        // typed prefixes: a user id can never collide with an IP string (or "anon")
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.User.Identity?.Name ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
-            _ => new FixedWindowRateLimiterOptions { PermitLimit = 100, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
-    o.AddFixedWindowLimiter("auth", w => { w.PermitLimit = 5; w.Window = TimeSpan.FromMinutes(1); w.QueueLimit = 0; });
+            ctx.User.FindFirstValue(ClaimTypes.NameIdentifier) is { } userId ? $"u:{userId}"
+                : $"ip:{ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown"}",
+            _ =>                                        // runs once per new partition, not per request
+            {
+                var limits = ctx.RequestServices.GetRequiredService<IOptions<GlobalRateLimitOptions>>().Value;
+                return new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = limits.PermitLimit, Window = TimeSpan.FromSeconds(limits.WindowSeconds), QueueLimit = 0,
+                };
+            }));
+    // Partitioned per client IP — AddFixedWindowLimiter("auth", …) would be ONE global bucket:
+    // 5 attempts/min for the whole internet, so any attacker locks every user out of login.
+    o.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        $"ip:{ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown"}",
+        _ =>                                            // runs once per new partition, not per request
+        {
+            var limits = ctx.RequestServices.GetRequiredService<IOptions<AuthRateLimitOptions>>().Value;
+            return new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = limits.PermitLimit, Window = TimeSpan.FromSeconds(limits.WindowSeconds), QueueLimit = 0,
+            };
+        }));
     o.OnRejected = (ctx, ct) =>
     {
         if (ctx.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
@@ -114,11 +141,35 @@ builder.Services.AddRateLimiter(o =>
 });
 app.UseAuthentication();
 app.UseRateLimiter();                                   // after UseAuthentication (identity partition) and routing (per-endpoint policies)
-authGroup.RequireRateLimiting("auth");                  // /api/auth/* gets the strict policy
+var auth = api.MapGroup("/auth").RequireRateLimiting("auth"); // THE /api/auth group (api = antiforgery-filtered /api):
+                                                        // login, logout, external login inherit the strict policy once
+app.MapHealthChecks("/health/ready", …).AllowAnonymous().DisableRateLimiting(); // probes never 429
+
+// Security/RateLimitOptions.cs
+public sealed class GlobalRateLimitOptions
+{
+    public const string Section = "RateLimiting:Global";
+    [Range(1, 1_000_000)] public int PermitLimit { get; set; } = 100;
+    [Range(1, 3_600)] public int WindowSeconds { get; set; } = 60;
+}
+[OptionsValidator] public partial class GlobalRateLimitOptionsValidator : IValidateOptions<GlobalRateLimitOptions>;
+
+public sealed class AuthRateLimitOptions
+{
+    public const string Section = "RateLimiting:Auth";
+    [Range(1, 100_000)] public int PermitLimit { get; set; } = 5;
+    [Range(1, 3_600)] public int WindowSeconds { get; set; } = 60;
+}
+[OptionsValidator] public partial class AuthRateLimitOptionsValidator : IValidateOptions<AuthRateLimitOptions>;
 ```
 
-- **Order matters for identity partitions:** before `UseAuthentication`, `ctx.User` is still anonymous, so `ctx.User.Identity?.Name` is always null and every request falls back to the IP key — verified (partition key was `127.0.0.1` for a signed-in user with the limiter first, the user name with it after). Microsoft's generic Kestrel middleware order lists `UseRateLimiter` before authentication; that is only right for IP-only limiters. Routing is implicit at the start of a `WebApplication` pipeline, so per-endpoint policies work in this position.
+- **Order matters for identity partitions:** before `UseAuthentication`, `ctx.User` is still anonymous, so `ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)` is always null and every request falls back to the IP key — verified (partition key was `ip:127.0.0.1` for a signed-in user with the limiter first, `u:<user id>` with it after). Microsoft's generic Kestrel middleware order lists `UseRateLimiter` before authentication; that is only right for IP-only limiters. Routing is implicit at the start of a `WebApplication` pipeline, so per-endpoint policies work in this position.
+- **Partition keys are prefixed** (`u:` / `ip:`): an unprefixed key lets a user named like an IP (or the literal fallback `"anon"`) share a bucket with anonymous traffic. Partition on the stable user id claim, not the display name.
+- **Health probes are exempt**: `DisableRateLimiting()` disables every limiter on the endpoint, global ones included (documented) — orchestrator probes from one IP must never get 429 and mark the app unhealthy.
+- **Auth limits are partitioned, never a single named limiter:** `AddFixedWindowLimiter("auth", …)` creates one shared bucket for all callers — an attacker spending 5 requests/min denies login to everyone. Partition per IP (`AddPolicy` above). Against distributed credential stuffing on one account, optionally add a per-username throttle keyed on the normalized submitted user name — the partitioner runs before model binding and doesn't see the JSON body, so enforce it in the login handler (the lockout counter) rather than as a limiter policy.
 - `QueueLimit = 0` on auth endpoints: reject immediately, don't queue brute-force traffic.
+- **Both limits are configuration, not constants:** `RateLimiting:Global:PermitLimit` / `RateLimiting:Global:WindowSeconds` (defaults 100 / 60) and `RateLimiting:Auth:PermitLimit` / `RateLimiting:Auth:WindowSeconds` (defaults 5 / 60), validated on start. Production keeps the defaults. The e2e compose override raises both with env `RateLimiting__Global__PermitLimit` / `RateLimiting__Auth__PermitLimit`: e2e runs one setup login (plus retries), a UI login test and extra-user logins, and every browser request arrives from the one nginx IP — a single anonymous `ip:` bucket. The values are read when a partition is first created, so a change applies to new partitions (restart to apply everywhere).
+- **Integration tests raise both limits too:** TestServer requests share one remote IP and `TestAuthHandler` signs every request in as one user, so the whole suite lands in one global partition and one auth partition. `ApiFixture` sets `UseSetting("RateLimiting:Global:PermitLimit", "100000")` and `UseSetting("RateLimiting:Auth:PermitLimit", "100000")`; exactly one dedicated test (its own factory, production values) asserts the limiter still returns 429 — see `dotnet-testing` → `references/best-practices.md`.
 - **Documented DoS warning:** partitioning on client IP is spoofable and behind a proxy every request shares the proxy IP — configure `UseForwardedHeaders` correctly first, and prefer user identity as the partition key once authenticated.
 - Rate limiting is not DDoS protection; that belongs at the edge (WAF/CDN), per docs.
 
@@ -233,7 +284,7 @@ Keep hubs under `RequireAuthorization()`. `Origin` is only checked when present 
 - **Hashing:** Argon2id preferred, PBKDF2 acceptable (OWASP Password Storage sheet) — matches SKILL.md; never roll your own.
 
 ```csharp
-authGroup.MapPost("/login", async Task<Results<Ok, UnauthorizedHttpResult>> (
+auth.MapPost("/login", async Task<Results<Ok, UnauthorizedHttpResult>> (
     LoginRequest req, IUserService users, HttpContext http, CancellationToken ct) =>
 {
     var user = await users.FindByEmailAsync(req.Email, ct);
@@ -252,15 +303,16 @@ authGroup.MapPost("/login", async Task<Results<Ok, UnauthorizedHttpResult>> (
         principal, new AuthenticationProperties());
     http.User = principal;                                  // XSRF token in this response binds to the new user
     return TypedResults.Ok();
-}).AllowAnonymous().RequireRateLimiting("auth");           // inside the antiforgery-filtered /api group
+}).AllowAnonymous();                                      // "auth" policy + antiforgery come from the auth group
 ```
 
 Logout mirrors it: `SignOutAsync`, then `http.User = new ClaimsPrincipal(new ClaimsIdentity())`.
 
 ### Testing the security wiring (`dotnet-testing`)
 
-The quality gate applies to auth plumbing too — these regress silently. `WebApplicationFactory` with `AllowAutoRedirect = false` and `HandleCookies = true` (HTTPS base address, since every cookie is `Secure`):
+The quality gate applies to auth plumbing too — these regress silently. `WebApplicationFactory` client with `BaseAddress = new Uri("https://localhost")` (every cookie is `Secure`; the default `http://localhost` never resends them), `AllowAutoRedirect = false` and `HandleCookies = true` (the default) — helper in `dotnet-testing` → references:
 
+- an endpoint mapped **without** any authorization metadata → 401 for an anonymous client (the fallback policy holds);
 - unauthenticated `GET /api/...` and `/api/gw/...` → 401, not 302;
 - `POST` without `X-XSRF-TOKEN` → 400 (not 500) on `/api/...` **and** on `/api/gw/...` (and the backend is never hit);
 - startup `GET /api/me` while logged out → 401 **with** `XSRF-TOKEN` set;

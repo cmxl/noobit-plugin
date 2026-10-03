@@ -44,24 +44,34 @@ Scope guard: this stance applies to new code. A codebase that already has a repo
 
 ## EF Core rules
 
+### DbContext registration — the one canonical block
+
 ```csharp
 // Postgres: ONE singleton NpgsqlDataSource feeds EF and Dapper (one pool, one place for type mappings)
 builder.Services.AddNpgsqlDataSource(cs);   // Npgsql.DependencyInjection; configure enums/JSON via its builder overload
-builder.Services.AddDbContextPool<AppDbContext>((sp, o) => o
+// ONE registration per context. AddPooledDbContextFactory registers (EF Core 10 source):
+//   IDbContextFactory<AppDbContext>  singleton — workers, cache factories, parallel units of work
+//   AppDbContext                     scoped, leased from the same pool — request code injects it directly
+builder.Services.AddPooledDbContextFactory<AppDbContext>((sp, o) => o
     .UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>(), npgsql => npgsql.EnableRetryOnFailure())
     .UseSnakeCaseNamingConvention());       // EFCore.NamingConventions package
 ```
 
-MSSQL: `UseSqlServer(cs, sql => sql.EnableRetryOnFailure())` — and the connection string **must carry an explicit `Application Name=`**: since EF 10, EF injects one when it's absent, so EF and Dapper using the "same" string land in **different SqlClient pools**, and mixing them in a `TransactionScope` escalates to a distributed transaction (EF10 breaking change). With an explicit name EF leaves the string untouched.
+- Never combine it with `AddDbContext`/`AddDbContextPool`/`AddDbContextFactory` for the same context — one registration, one pool. Every other skill (caching factories, workers, tenant stamping) builds on this block.
+- Pooled instances are reused: `OnConfiguring` runs once per instance, so per-request state (tenant id) is stamped by a scoped registration that wraps the factory — pattern in `bff-security` → references/authorization.md (the EF docs' "pooling with state" pattern).
+- Contexts from `CreateDbContext[Async]()` are yours to dispose (`await using`) — disposal returns them to the pool; the scoped one is disposed with the scope.
 
-- `AddDbContextPool` (not `AddDbContext`) for request-scoped contexts.
+MSSQL: the same block with `UseSqlServer(cs, sql => sql.EnableRetryOnFailure())` — and the connection string **must carry an explicit `Application Name=`**: since EF 10, EF injects one when it's absent, so EF and Dapper using the "same" string land in **different SqlClient pools**, and mixing them in a `TransactionScope` escalates to a distributed transaction (EF10 breaking change). With an explicit name EF leaves the string untouched.
+
+### Query and write rules
+
 - **Reads**: `AsNoTracking()` + `.Select()` projection to DTOs. Tracking is only for entities you'll mutate.
 - **No lazy loading, ever.** N+1 (one query per row) is the lazy-loading failure mode — fix with a projection or explicit `Include`.
 - **Cartesian explosion** is the opposite failure: sibling collection `Include`s multiply rows in one query — fix with `.AsSplitQuery()` or a narrower projection.
 - **Set-based writes**: `ExecuteUpdateAsync`/`ExecuteDeleteAsync` instead of load-modify-save loops.
 - Hot, parameter-stable queries: `EF.CompileAsyncQuery`.
 - Concurrency: `[Timestamp] byte[]` (rowversion) on MSSQL; on Postgres `[Timestamp] uint Version` maps to the `xmin` system column. Catch `DbUpdateConcurrencyException` and resolve deliberately (reload + tell the user, or refresh original values and retry) — example in [references/best-practices.md](references/best-practices.md).
-- **Outside a request** (hosted/background services, singletons): never capture a `DbContext` — create one per unit of work via `IServiceScopeFactory.CreateAsyncScope()` or `IDbContextFactory<T>` (`AddPooledDbContextFactory`).
+- **Outside a request** (hosted/background services, singletons, cache factories): never capture a `DbContext` — `await using var db = await dbFactory.CreateDbContextAsync(ct)` per unit of work (the factory from the canonical block), or `IServiceScopeFactory.CreateAsyncScope()` when other scoped services are needed too.
 - Configuration via `IEntityTypeConfiguration<T>` classes, not a 1000-line `OnModelCreating`.
 - Never string-interpolate into `FromSqlRaw` — use `FromSql` (interpolated-handler, parameterizes automatically).
 
@@ -70,6 +80,7 @@ MSSQL: `UseSqlServer(cs, sql => sql.EnableRetryOnFailure())` — and the connect
 - `dotnet ef migrations add <Name>` — review the generated code, especially destructive ops.
 - One provider per project; if a project supports multiple providers, keep migrations in provider-specific assemblies (`Migrations/Mssql`, `Migrations/Postgres`).
 - Apply on deploy via SQL scripts or a migration bundle — **not** `Database.Migrate()` at production startup. (EF 9+'s migration lock fixed the old multi-instance race, but runtime migration remains officially discouraged: it needs elevated schema permissions, applies uninspected SQL, and has no clean rollback.) For single-instance/dev, startup migrate is fine.
+- CI/CD: `has-pending-model-changes` gate, idempotent script or bundle built once as an artifact, applied as a one-shot step before the rollout with a separate schema-owner identity: [references/migrations-ci.md](references/migrations-ci.md).
 
 ## Dapper rules
 
@@ -111,22 +122,29 @@ public sealed class OrderService(AppDbContext db)
         db.Orders.Add(order);   // outside the delegate — a retry must not Add again
 
         // EnableRetryOnFailure requires the execution strategy to own the whole transaction —
-        // BeginTransaction without it throws with retries enabled. Use the (state, token) overload:
-        // passing ct AS the state compiles but hides cancellation from the retry machinery.
+        // BeginTransaction without it throws with retries enabled. Use the (state, token) overload
+        // with ct LAST: passing ct AS the state compiles but hides cancellation from the retry machinery.
+        // static lambda + tuple state: nothing captured
+        // The outbox row id is the AMQP MessageId: one fresh id PER MESSAGE, never the aggregate id (a second
+        // event for the same order would hit the PK / be deduped away by the consumer inbox). Created BEFORE
+        // the strategy so a replay reuses it. v7 is also fine on SQL Server here: dbo.OutboxMessages clusters
+        // on Seq and Id is a NONCLUSTERED PK (rabbitmq-messaging → outbox-inbox.md); an outbox clustered on
+        // Id would need a SQL-Server-sequential Guid instead (mssql → Index design).
+        var messageId = Guid.CreateVersion7();
         var strategy = db.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(order, async (o, token) =>
+        await strategy.ExecuteAsync((Db: db, Order: order, MessageId: messageId), static async (s, token) =>
         {
-            await using var tx = await db.Database.BeginTransactionAsync(token);
+            await using var tx = await s.Db.Database.BeginTransactionAsync(token);
 
             // acceptAllChangesOnSuccess: false keeps the entities Added, so a retry after a
             // failed commit replays the same insert instead of finding nothing to save
-            await db.SaveChangesAsync(acceptAllChangesOnSuccess: false, token);
+            await s.Db.SaveChangesAsync(acceptAllChangesOnSuccess: false, token);
 
-            var conn = db.Database.GetDbConnection();           // same connection EF uses
+            var conn = s.Db.Database.GetDbConnection();         // EF's connection — never dispose it
             await conn.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO outbox_messages (id, type, payload) VALUES (@Id, @Type, @Payload)",
-                new { o.Id, Type = "order.created", Payload = Serialize(o) },
-                transaction: tx.GetDbTransaction(),             // same transaction
+                new { Id = s.MessageId, Type = "order.created", Payload = Serialize(s.Order) },
+                transaction: tx.GetDbTransaction(),             // EF's transaction
                 cancellationToken: token));
 
             await tx.CommitAsync(token);
@@ -134,10 +152,16 @@ public sealed class OrderService(AppDbContext db)
 
         db.ChangeTracker.AcceptAllChanges();   // only after the commit succeeded
     }
+
+    // static: called from the static lambda
+    private static string Serialize(Order order) =>
+        JsonSerializer.Serialize(new OrderCreated(order.Id, order.Quantity), AppJsonContext.Default.OrderCreated);
 }
 ```
 
-A connection drop *during* commit leaves the outcome unknown and the strategy retries as if rolled back — use client-generated keys (e.g. `Guid.CreateVersion7()`) so a duplicate fails loudly, or `ExecuteInTransactionAsync(..., verifySucceeded: ...)` (see seam reference).
+A connection drop *during* commit leaves the outcome unknown and the strategy retries as if rolled back — make the replay fail loudly with **client-generated keys assigned before the strategy runs**, or verify with `ExecuteInTransactionAsync(..., verifySucceeded: ...)` (seam reference). The key generator depends on the provider:
+- **PostgreSQL / SQLite**: `Guid.CreateVersion7()` (time-ordered, index-friendly), set when the entity is created.
+- **SQL Server**: **not** UUIDv7 — `uniqueidentifier` sorts by its last bytes, so v7 fragments a clustered index like `NEWID()`. Keep EF's default for `Guid` keys, `SequentialGuidValueGenerator`: it generates the value client-side when the entity is tracked as `Added` (`db.Orders.Add(order)`, outside the strategy), and the `acceptAllChangesOnSuccess: false` replay reuses it. Or a non-clustered Guid PK with a sequential clustered key (`mssql` → Index design rules).
 
 **Shared plumbing per provider:**
 - **Postgres**: one singleton `NpgsqlDataSource` feeds *both* — `UseNpgsql(dataSource)` for EF and inject it for Dapper. One pool, one place for enum/JSON mappings. Snake_case seam: `DefaultTypeMap.MatchNamesWithUnderscores = true;` once at startup so Dapper maps `customer_name` → `CustomerName`.
@@ -191,7 +215,8 @@ Everything deeper is provider-specific and lives in the dedicated skills — **l
 | Manual `BeginTransaction` with `EnableRetryOnFailure` | Wrap in `CreateExecutionStrategy().ExecuteAsync` |
 | Row-by-row inserts for bulk data | Provider bulk API (bulk ingestion table above) |
 | EF migration renames a column, Dapper SQL still old | Grep `*Queries` on every migration; integration tests on real DB catch the rest |
-| `DbContext` captured in a singleton / `BackgroundService` | Scope or `IDbContextFactory<T>` per unit of work |
+| `DbContext` captured in a singleton / `BackgroundService` | `IDbContextFactory<T>` (canonical block) or a scope per unit of work |
+| Two registrations for one context (`AddDbContextPool` + `AddDbContextFactory`) | One `AddPooledDbContextFactory` — it provides both the factory and the scoped context |
 | EF InMemory provider or SQLite-in-memory standing in for MSSQL/Postgres in tests | Real engine via Testcontainers — EF docs discourage InMemory; SQLite differs in translation, case-sensitivity, raw SQL |
 | MSSQL connection string without `Application Name` (EF 10) | Set it explicitly — otherwise EF and Dapper use two pools |
 
@@ -204,3 +229,4 @@ When an API or behavior is uncertain or newer than your knowledge, WebFetch/WebS
 - Microsoft.Data.Sqlite: https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/
 - **Established patterns & current versions (verified October 2026): [references/best-practices.md](references/best-practices.md) — read it before writing code in this area.**
 - **EF Core + Dapper seam deep-dive (verified October 2026): [references/efcore-dapper-seam.md](references/efcore-dapper-seam.md) — read it when mixing the two or moving bulk data.**
+- **Migrations in CI/CD (verified October 2026): [references/migrations-ci.md](references/migrations-ci.md).**

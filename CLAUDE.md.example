@@ -1,7 +1,9 @@
 # Global conventions (noobit stack)
 
+<!-- setup:strip -->
 Copy this into your `~/.claude/CLAUDE.md` (or a team repo's `CLAUDE.md`) — plugins cannot ship
 always-on instructions, and the quality gates below should be active in every session.
+<!-- /setup:strip -->
 
 These are the defaults for every project unless the project's own CLAUDE.md says otherwise.
 Deep how-to knowledge lives in the noobit plugin's skills — load the matching skill before
@@ -35,16 +37,18 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 | Logging | Serilog (structured), behind `ILogger<T>` — never NLog/log4net | `noobit:aspnet-backend` |
 | Containers | Docker: cached multi-stage builds, small images, compose | `noobit:docker` |
 | Hosting | nginx reverse proxy, Let's Encrypt | `noobit:nginx-deploy` |
-| Frontend | Angular latest LTS, standalone, signals | `angular-developer` (external) |
+| Frontend | Angular latest stable major, standalone, signals | `angular-developer` (external) |
 | State | NgRx SignalStore | `noobit:angular-ngrx-state` |
 | .NET tests | xUnit v3 + NSubstitute (never Moq) + Testcontainers + WebApplicationFactory | `noobit:dotnet-testing` |
-| Angular tests | Vitest (unit), Playwright (e2e) | — |
+| Angular tests | Vitest (unit), Playwright (e2e) | `noobit:frontend-testing` |
+| CI/CD | Azure DevOps YAML pipelines | `noobit:ci-pipelines` |
+| Integrations (when a project needs them) | PayPal checkout + webhooks; Discord bots/apps | `noobit:paypal` / `noobit:discord` |
 | Docs | Markdown in `docs/`, cross-referenced, Mermaid diagrams | `noobit:docs-maintenance` |
 
 ## Non-negotiable quality gates
 
 1. **Every feature and bugfix ships with tests.** No untested behavior changes. Prefer TDD.
-2. **Review before commit.** Dispatch the `stack-reviewer` agent on the diff before any commit; fix BLOCKER and MAJOR findings first.
+2. **Review before commit.** Dispatch the `stack-reviewer` agent on the diff before any commit; fix BLOCKER and MAJOR findings first. `/noobit:ship` runs gates 1–3 in one go and drafts the commit message.
 3. **Docs stay in sync.** A change that affects behavior, architecture, config, or APIs updates `docs/` in the same change (use the `docs-maintainer` agent or `/noobit:docs-sync`).
 4. **Performance is a feature.** Prefer allocation-free paths, source-generated JSON, caching via FusionCache, and measured decisions (benchmark before optimizing, but don't write known-slow patterns).
 5. **Security by default.** Cookies HttpOnly+Secure+SameSite, antiforgery on state-changing endpoints, parameterized SQL only, no secrets in code or logs.
@@ -53,8 +57,11 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 
 - Keep manual intervention low: run builds/formatters/tests yourself instead of asking me to.
 - Docker needed but not running (Testcontainers, compose, builds)? Start it yourself — `docker info` to check, launch Docker Desktop (Windows/macOS) or `systemctl start docker` (Linux), poll until ready (~90s). Only report it as unavailable if starting fails.
-- When unsure about a framework API or best practice, WebFetch/WebSearch the official docs instead of guessing: .NET/ASP.NET Core/EF Core → https://learn.microsoft.com/, Angular → https://angular.dev, NgRx SignalStore → https://ngrx.io/guide/signals/signal-store. Each skill lists its own doc links in an "Official docs" section.
-- New solutions/projects: scaffold with `/noobit:new-fullstack`; deployment assets with `/noobit:deploy-setup`. Non-trivial bugfixes and changes: `/noobit:surgical` (gated end-to-end workflow).
+- When unsure about a framework API or best practice, WebFetch/WebSearch the official docs instead of guessing: .NET/ASP.NET Core/EF Core → https://learn.microsoft.com/, Angular → https://angular.dev, NgRx SignalStore → https://ngrx.io/guide/signals/signal-store. Most skills list their own doc links in an "Official docs" section.
+- New solutions/projects: scaffold with `/noobit:new-fullstack`; deployment assets with `/noobit:deploy-setup`. Non-trivial bugfixes and changes: `/noobit:surgical` (gated end-to-end workflow). Schema changes: `/noobit:ef-migration`.
+- **Decisions get recorded.** A settled architecture/tech decision → suggest an ADR (`/noobit:new-adr`); a change that needs design before code → an RFC (`/noobit:new-rfc`). Both run the `tech-lead` agent, which writes to `docs/adr/` / `docs/rfc/`. Exploratory brainstorming stays in `work/specs/`.
+- **Commits & branches** (unless the repo defines its own): Conventional Commits (`feat|fix|refactor|test|docs|chore(scope): summary`, imperative, ≤ 72 chars, body says *why*, work-item reference when there is one); one logical change per commit; branch off the default branch as `<type>/<work-item>-<slug>`; never commit or push unless I ask.
+- The noobit format hook may rewrite a file right after Write/Edit (`dotnet format` in repos with an `.editorconfig`, Prettier where installed). An Edit failing with "modified since read" afterwards is expected — re-read the file and continue.
 - **Specs & plans live in `work/`**, not `docs/`: superpowers brainstorming output goes to `work/specs/YYYY-MM-DD-<topic>-design.md`, implementation plans to `work/plans/` (this preference overrides those skills' default `docs/superpowers/...` location). `work/` is working material — committed, but never part of the `docs/` index or cross-reference web.
 - **TDD is the primary path** (superpowers test-driven-development) when implementing; the `test-guardian` agent is the safety net that catches coverage gaps afterwards — not a license to write tests after the fact.
 - **Ad-hoc scripts stay simple** (pwsh, bash, az CLI): plain commands, one line per change — e.g. one `az appconfig kv set` line per setting — no functions/modules/loops/param blocks unless I ask or the task needs real logic. See `noobit:simple-scripts`.
