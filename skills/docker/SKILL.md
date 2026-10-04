@@ -191,7 +191,9 @@ Rules for the rest of the stack (rationale in [references/best-practices.md](ref
 - **Secrets:** compose `secrets:` files (above); `.env` holds non-secrets only (`REGISTRY`, `APP_TAG`,
   `COMPOSE_PROFILES`) — never in the compose file or image.
 - **Ports:** only nginx publishes (80/443) — never db/redis/rabbit. In production the nginx + certbot
-  services from `nginx-deploy` join this file (nginx on `edge` only).
+  services from `nginx-deploy` join this file (nginx on `edge`; only nginx and the app belong on
+  `edge`, because the app trusts that subnet for forwarded headers. Other proxied services such as
+  Grafana get their own nginx-only network, see `grafana`).
 - **Profiles:** `prod` = nginx + certbot (server `.env`: `COMPOSE_PROFILES=prod`; an overlay can't
   remove services, a profile keeps them off dev machines); `tools` = one-shot jobs run only via
   `docker compose run --rm <job>` (`migrate`); `ops` = optional long-running sidecars (pgadmin, backup).

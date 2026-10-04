@@ -90,6 +90,8 @@ that first; nothing here overrides it. Reverse proxy, TLS, and Let's Encrypt: se
   - Node: major (`node:24-slim`) — one LTS line, build stage only.
   - Redis: major (`redis:8`) is acceptable because the cache is reconstructible; pin major.minor
     (`redis:8.x`) if feature releases should land only on purpose.
+  - Grafana: **exact** patch (`grafana/grafana:13.2.3`). Upgrades run one-way storage migrations,
+    so each bump is a deliberate step after reading the upgrade guide (`grafana`).
 - Cache mounts (`RUN --mount=type=cache,...` for NuGet/npm) are the default pattern here, not a
   CI-only extra — see the dedicated section below.
 

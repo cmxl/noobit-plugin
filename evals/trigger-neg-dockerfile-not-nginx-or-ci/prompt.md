@@ -1,6 +1,6 @@
 ---
 name: trigger-neg-dockerfile-not-nginx-or-ci
-description: A Dockerfile caching question must not load nginx-deploy or ci-pipelines
+description: A Dockerfile caching question must not load nginx-deploy, ci-pipelines or grafana
 tags: [trigger]
 runs: 1
 max_turns: 8

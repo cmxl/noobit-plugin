@@ -95,7 +95,7 @@ Alert on symptoms users feel, dashboard the causes:
 | Background jobs | "last successful run" age per scheduled job (emit a gauge or log event each success) |
 | Security | spikes of 401/403/429 on `/api/auth/*`, antiforgery 400s after a deploy |
 
-Dashboards (not alerts): GC pause time (`dotnet.gc.pause.time`), cache hit ratio (FusionCache metrics), outbound HTTP latency/error per client, EF/Npgsql span durations.
+Dashboards (not alerts): GC pause time (`dotnet.gc.pause.time`), cache hit ratio (FusionCache metrics), outbound HTTP latency/error per client, EF/Npgsql span durations. Building them in Grafana (self-hosting, dashboards as code, PromQL for these metric names, a starter RED dashboard): `noobit:grafana`.
 
 ## Anti-patterns
 

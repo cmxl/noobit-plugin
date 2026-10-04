@@ -37,6 +37,7 @@ When a default doesn't fit, state which one and why in one sentence, then procee
 | Logging | Serilog (structured), behind `ILogger<T>` — never NLog/log4net | `noobit:aspnet-backend` |
 | Containers | Docker: cached multi-stage builds, small images, compose | `noobit:docker` |
 | Hosting | nginx reverse proxy, Let's Encrypt | `noobit:nginx-deploy` |
+| Dashboards | Grafana (self-hosted in compose), dashboards as code in git, pushed with gcx | `noobit:grafana` |
 | Frontend | Angular latest stable major, standalone, signals | `angular-developer` (external) |
 | State | NgRx SignalStore | `noobit:angular-ngrx-state` |
 | .NET tests | xUnit v3 + NSubstitute (never Moq) + Testcontainers + WebApplicationFactory | `noobit:dotnet-testing` |

@@ -1,0 +1,190 @@
+{
+  "apiVersion": "dashboard.grafana.app/v1",
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "aspnetcore-red",
+    "annotations": { "grafana.app/folder": "platform" }
+  },
+  "spec": {
+    "title": "ASP.NET Core service (RED)",
+    "description": "Rate, errors, duration and runtime health of one ASP.NET Core service. Metrics: OpenTelemetry .NET meters (Microsoft.AspNetCore.Hosting, System.Runtime) in Prometheus, via OTLP or scrape (job = service name). Managed in git - changes go through the repo, not the UI.",
+    "tags": ["aspnetcore", "red", "managed"],
+    "editable": false,
+    "graphTooltip": 1,
+    "refresh": "1m",
+    "schemaVersion": 42,
+    "time": { "from": "now-6h", "to": "now" },
+    "timepicker": {},
+    "timezone": "browser",
+    "links": [],
+    "annotations": { "list": [] },
+    "templating": {
+      "list": [
+        {
+          "name": "datasource",
+          "label": "Data source",
+          "type": "datasource",
+          "query": "prometheus",
+          "current": { "text": "Prometheus", "value": "prometheus" },
+          "hide": 0
+        },
+        {
+          "name": "job",
+          "label": "Service",
+          "type": "query",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "query": { "qryType": 1, "query": "label_values(http_server_request_duration_seconds_count, job)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+          "definition": "label_values(http_server_request_duration_seconds_count, job)",
+          "refresh": 2,
+          "sort": 1,
+          "includeAll": false,
+          "multi": false
+        },
+        {
+          "name": "route",
+          "label": "Route",
+          "type": "query",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "query": { "qryType": 1, "query": "label_values(http_server_request_duration_seconds_count{job=\"$job\"}, http_route)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+          "definition": "label_values(http_server_request_duration_seconds_count{job=\"$job\"}, http_route)",
+          "refresh": 2,
+          "sort": 1,
+          "includeAll": true,
+          "allValue": ".*",
+          "multi": true,
+          "current": { "text": ["All"], "value": ["$__all"] }
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1, "type": "stat", "title": "Request rate",
+        "description": "Requests per second across the selected routes.",
+        "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+        "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"$job\", http_route=~\"$route\"}[$__rate_interval]))" }]
+      },
+      {
+        "id": 2, "type": "stat", "title": "Error ratio (5xx)",
+        "description": "Share of requests answered with a 5xx status (0 when there were none). 4xx are client errors and excluded.",
+        "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 2, "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.01 }, { "color": "red", "value": 0.05 }] },
+          "color": { "mode": "thresholds" } }, "overrides": [] },
+        "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "(sum(rate(http_server_request_duration_seconds_count{job=\"$job\", http_route=~\"$route\", http_response_status_code=~\"5..\"}[$__rate_interval])) or vector(0)) / sum(rate(http_server_request_duration_seconds_count{job=\"$job\", http_route=~\"$route\"}[$__rate_interval]))" }]
+      },
+      {
+        "id": 3, "type": "stat", "title": "p95 latency",
+        "description": "95th percentile server-side request duration (histogram), all selected routes.",
+        "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "s", "decimals": 3,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.5 }, { "color": "red", "value": 1 }] },
+          "color": { "mode": "thresholds" } }, "overrides": [] },
+        "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"$job\", http_route=~\"$route\"}[$__rate_interval])))" }]
+      },
+      {
+        "id": 4, "type": "stat", "title": "In-flight requests",
+        "description": "Requests currently being processed (all instances).",
+        "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "purple" } }, "overrides": [] },
+        "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(http_server_active_requests{job=\"$job\"})" }]
+      },
+      {
+        "id": 5, "type": "timeseries", "title": "Requests by route",
+        "description": "Request rate per route template (http.route) - never raw paths, which would explode cardinality.",
+        "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "reqps", "min": 0, "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "{{http_request_method}} {{http_route}}",
+          "expr": "sum by (http_request_method, http_route) (rate(http_server_request_duration_seconds_count{job=\"$job\", http_route=~\"$route\"}[$__rate_interval]))" }]
+      },
+      {
+        "id": 6, "type": "timeseries", "title": "Responses by status code",
+        "description": "Request rate per HTTP status code; 5xx in red, 4xx in orange.",
+        "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "reqps", "min": 0, "custom": { "fillOpacity": 10, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } } },
+          "overrides": [
+            { "matcher": { "id": "byRegexp", "options": "5.." }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+            { "matcher": { "id": "byRegexp", "options": "4.." }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
+          ] },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "{{http_response_status_code}}",
+          "expr": "sum by (http_response_status_code) (rate(http_server_request_duration_seconds_count{job=\"$job\", http_route=~\"$route\"}[$__rate_interval]))" }]
+      },
+      {
+        "id": 7, "type": "timeseries", "title": "Latency percentiles",
+        "description": "p50 / p95 / p99 request duration from the http.server.request.duration histogram.",
+        "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "s", "min": 0, "custom": { "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "p50",
+            "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"$job\", http_route=~\"$route\"}[$__rate_interval])))" },
+          { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "p95",
+            "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"$job\", http_route=~\"$route\"}[$__rate_interval])))" },
+          { "refId": "C", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "p99",
+            "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"$job\", http_route=~\"$route\"}[$__rate_interval])))" }
+        ]
+      },
+      {
+        "id": 8, "type": "timeseries", "title": "p95 latency by route",
+        "description": "Slowest routes first in the legend.",
+        "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "s", "min": 0, "custom": { "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+        "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"], "sortBy": "Max", "sortDesc": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "{{http_route}}",
+          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{job=\"$job\", http_route=~\"$route\"}[$__rate_interval])))" }]
+      },
+      {
+        "id": 9, "type": "row", "title": "Runtime", "collapsed": false,
+        "gridPos": { "x": 0, "y": 20, "w": 24, "h": 1 }, "panels": []
+      },
+      {
+        "id": 10, "type": "timeseries", "title": "CPU usage",
+        "description": "Process CPU time per second divided by available CPUs, per instance.",
+        "gridPos": { "x": 0, "y": 21, "w": 8, "h": 7 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "{{instance}}",
+          "expr": "sum by (instance) (rate(dotnet_process_cpu_time_seconds_total{job=\"$job\"}[$__rate_interval])) / on (instance) max by (instance) (dotnet_process_cpu_count{job=\"$job\"})" }]
+      },
+      {
+        "id": 11, "type": "timeseries", "title": "Working set",
+        "description": "Process working set per instance.",
+        "gridPos": { "x": 8, "y": 21, "w": 8, "h": 7 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "bytes", "min": 0, "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "{{instance}}",
+          "expr": "sum by (instance) (dotnet_process_memory_working_set_bytes{job=\"$job\"})" }]
+      },
+      {
+        "id": 12, "type": "timeseries", "title": "GC pause time",
+        "description": "Fraction of wall-clock time spent in GC pauses, per instance.",
+        "gridPos": { "x": 16, "y": 21, "w": 8, "h": 7 },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "legendFormat": "{{instance}}",
+          "expr": "sum by (instance) (rate(dotnet_gc_pause_time_seconds_total{job=\"$job\"}[$__rate_interval]))" }]
+      }
+    ]
+  }
+}

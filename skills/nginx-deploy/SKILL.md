@@ -34,7 +34,7 @@ A single **nginx** reverse proxy terminates TLS with **Let's Encrypt** certs in 
       start_period: 10s
     depends_on:
       app: { condition: service_healthy }   # no 502 window at stack start
-    networks: [edge]       # never `backend` — nginx only ever talks to the app
+    networks: [edge]       # (+ `grafana` when the grafana skill adds Grafana) — never `backend`: nginx only talks to proxied services
     logging: { driver: local }
   certbot:
     image: certbot/certbot:v5.8.0
